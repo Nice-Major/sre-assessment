@@ -1,0 +1,57 @@
+# =============================================================================
+# Elastic Agent — Redis Integration Config
+# Section 3.2 — Database Monitoring
+#
+# The Online Boutique already runs a Redis instance for cartservice.
+# Endpoint: redis-cart.online-boutique.svc.cluster.local:6379
+# =============================================================================
+
+inputs:
+  - type: redis/metrics
+    id: redis-metrics
+    data_stream.namespace: assessment
+    use_output: default
+    streams:
+      # Server info + stats
+      - metricset: info
+        data_stream.dataset: redis.info
+        period: 10s
+        hosts:
+          - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
+      # Keyspace stats
+      - metricset: keyspace
+        data_stream.dataset: redis.keyspace
+        period: 10s
+        hosts:
+          - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
+      # Key metrics (sampling)
+      - metricset: key
+        data_stream.dataset: redis.key
+        period: 60s
+        hosts:
+          - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
+
+  # Redis slow log collection
+  - type: redis
+    id: redis-slowlog
+    data_stream.namespace: assessment
+    use_output: default
+    streams:
+      - metricset: info
+        data_stream.dataset: redis.slowlog
+        period: 10s
+        hosts:
+          - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
+
+# --- Key Metrics to Monitor (Section 3.2 Requirements) ---
+# ✓ Connected clients (redis.info.clients.connected_clients)
+# ✓ Memory usage: used_memory vs maxmemory
+# ✓ Keyspace hits/misses ratio (redis.info.stats.keyspace_hits / keyspace_misses)
+# ✓ Evicted keys (redis.info.stats.evicted_keys)
+# ✓ Command latency per operation type
+# ✓ Replication offset delta (if in cluster mode)
+# ✓ Keys per database (redis.keyspace.keys)
+
+# --- Alerting Rules (created in Kibana) ---
+# Alert 1: Memory approaching maxmemory — used_memory > 85% of maxmemory
+# Alert 2: High eviction rate — evicted_keys rate > 100/min

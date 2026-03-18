@@ -1,0 +1,76 @@
+# =============================================================================
+# Elastic Agent — PostgreSQL Integration Config
+# Section 3.2 — Database Monitoring
+#
+# Configure via Fleet UI or standalone agent config.
+# =============================================================================
+
+# PostgreSQL connection details (matches kubernetes/online-boutique/postgresql.yaml)
+# Host: postgresql.online-boutique.svc.cluster.local:5432
+# User: boutique
+# Password: assessment-pg-pass
+# Database: boutique_db
+
+# --- Fleet Integration Settings ---
+# Integration: PostgreSQL
+# Data streams: metrics + logs
+
+inputs:
+  - type: postgresql/metrics
+    id: postgresql-metrics
+    data_stream.namespace: assessment
+    use_output: default
+    streams:
+      # Activity metrics
+      - metricset: activity
+        data_stream.dataset: postgresql.activity
+        period: 10s
+        hosts:
+          - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+      # Database-level metrics
+      - metricset: database
+        data_stream.dataset: postgresql.database
+        period: 10s
+        hosts:
+          - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+      # Statement statistics (pg_stat_statements)
+      - metricset: statement
+        data_stream.dataset: postgresql.statement
+        period: 60s
+        hosts:
+          - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+      # Background writer stats
+      - metricset: bgwriter
+        data_stream.dataset: postgresql.bgwriter
+        period: 10s
+        hosts:
+          - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+
+  - type: logfile
+    id: postgresql-logs
+    data_stream.namespace: assessment
+    use_output: default
+    streams:
+      - data_stream.dataset: postgresql.log
+        paths:
+          - "/var/log/postgresql/*.log"
+          # If using StatefulSet, pg logs may be in:
+          - "/var/lib/postgresql/data/log/*.log"
+        processors:
+          - add_fields:
+              target: ""
+              fields:
+                service.name: postgresql
+
+# --- Key Metrics to Monitor (Section 3.2 Requirements) ---
+# ✓ Active connections vs max_connections
+# ✓ Transaction rate (commits/rollbacks per second)
+# ✓ Tuple operations (inserts/updates/deletes/fetches)
+# ✓ Cache hit ratio (shared buffer hits vs disk reads)
+# ✓ Slow query count (via pg_stat_statements data_stream)
+# ✓ Lock contention (waiting locks, deadlocks) — visible in activity
+# ✓ WAL generation rate — via bgwriter metricset
+
+# --- Alerting Rules (created in Kibana) ---
+# Alert 1: Connection pool exhaustion — active_connections > 80% of max_connections (80)
+# Alert 2: Cache hit ratio degradation — blks_hit / (blks_hit + blks_read) < 0.95

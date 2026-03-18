@@ -1,0 +1,22 @@
+# Kubernetes deployment patch for cartservice — injects OTel env vars
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cartservice
+  namespace: online-boutique
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-agent-opentelemetry-collector.otel-system.svc.cluster.local:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "cartservice"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.version=1.0.0,deployment.environment=assessment"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"

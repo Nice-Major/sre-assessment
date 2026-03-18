@@ -1,0 +1,36 @@
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: kibana
+  namespace: elastic
+spec:
+  version: 8.13.4
+  count: 1
+  elasticsearchRef:
+    name: elasticsearch
+  config:
+    server.publicBaseUrl: "http://localhost:5601"
+    xpack.fleet.agents.elasticsearch.hosts: ["http://elasticsearch-es-http.elastic.svc.cluster.local:9200"]
+    xpack.fleet.agents.fleet-server.hosts: ["http://fleet-server-agent-http.elastic.svc.cluster.local:8220"]
+    # Enable Fleet for Elastic Agent management
+    xpack.fleet.packages:
+      - name: system
+        version: latest
+      - name: postgresql
+        version: latest
+      - name: redis
+        version: latest
+      - name: nginx
+        version: latest
+      - name: kubernetes
+        version: latest
+  podTemplate:
+    spec:
+      containers:
+        - name: kibana
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: "1"
+            limits:
+              memory: 2Gi

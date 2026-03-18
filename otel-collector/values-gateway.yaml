@@ -1,0 +1,115 @@
+# =============================================================================
+# OpenTelemetry Collector — Gateway (central Deployment)
+# Receives from all DaemonSet agents, applies tail-based sampling on traces,
+# and exports to Elastic APM Server via OTLP.
+# =============================================================================
+mode: deployment
+replicaCount: 1
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.97.0"
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    protocol: TCP
+  zpages:
+    enabled: true
+    containerPort: 55679
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  processors:
+    memory_limiter:
+      check_interval: 5s
+      limit_mib: 800
+      spike_limit_mib: 200
+    batch:
+      timeout: 10s
+      send_batch_size: 2048
+      send_batch_max_size: 4096
+    # Tail-based sampling — only applied at the gateway level
+    # See sampling-policy.yaml for rationale
+    tail_sampling:
+      decision_wait: 10s
+      num_traces: 100000
+      expected_new_traces_per_sec: 200
+      policies:
+        # Policy 1: Always keep error traces
+        - name: always-sample-errors
+          type: status_code
+          status_code:
+            status_codes: [ERROR]
+        # Policy 2: Always keep slow requests (>1s)
+        - name: sample-high-latency
+          type: latency
+          latency:
+            threshold_ms: 1000
+        # Policy 3: Sample 10% of remaining healthy traces
+        - name: probabilistic-baseline
+          type: probabilistic
+          probabilistic:
+            sampling_percentage: 10
+
+  exporters:
+    otlp/elastic:
+      endpoint: "http://apm-server-apm-http.elastic.svc.cluster.local:8200"
+      headers:
+        Authorization: "Bearer assessment-secret-token"
+      tls:
+        insecure: true
+      retry_on_failure:
+        enabled: true
+        initial_interval: 5s
+        max_interval: 30s
+        max_elapsed_time: 300s
+    debug:
+      verbosity: basic
+
+  extensions:
+    zpages:
+      endpoint: 0.0.0.0:55679
+    health_check:
+      endpoint: 0.0.0.0:13133
+
+  service:
+    extensions: [zpages, health_check]
+    telemetry:
+      logs:
+        level: info
+      metrics:
+        address: 0.0.0.0:8888
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, tail_sampling, batch]
+        exporters: [otlp/elastic]
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlp/elastic]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlp/elastic]

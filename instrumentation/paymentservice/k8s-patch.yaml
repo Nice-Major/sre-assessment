@@ -1,0 +1,21 @@
+# Kubernetes deployment patch for paymentservice — injects OTel env vars
+# Also overrides the start command to preload tracing.js
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paymentservice
+  namespace: online-boutique
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "grpc://otel-agent-opentelemetry-collector.otel-system.svc.cluster.local:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "paymentservice"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.version=1.0.0,deployment.environment=assessment"
+            - name: NODE_OPTIONS
+              value: "--require ./tracing.js"
