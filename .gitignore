@@ -1,0 +1,60 @@
+# ── OS files ──
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ── Secrets & credentials (NEVER commit) ──
+*.pem
+*.key
+*.crt
+*.env
+.env.*
+kubeconfig
+.kube/
+secrets/
+*-secret.yaml
+
+# ── Terraform state ──
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# ── Node.js ──
+node_modules/
+package-lock.json
+
+# ── .NET build artifacts ──
+bin/
+obj/
+*.user
+*.suo
+
+# ── Go build artifacts ──
+vendor/
+
+# ── Helm chart downloads ──
+charts/
+
+# ── Logs ──
+*.log
+logs/
+
+# ── Temporary / generated files ──
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ── Azure / cloud ──
+.azure/
