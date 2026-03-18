@@ -17,8 +17,8 @@ RESOURCE_GROUP="sre-assessment-rg"
 CLUSTER_NAME="sre-assessment-aks"
 LOCATION="westeurope"          # Low-latency region with full AKS feature support
 NODE_COUNT=2
-NODE_SIZE="Standard_D4s_v3"    # 4 vCPU, 16 GB RAM — good balance
-K8S_VERSION="1.29"
+NODE_SIZE="Standard_D4ads_v6"  # 4 vCPU, 16 GB RAM — good balance
+K8S_VERSION="1.32"
 
 echo "╔════════════════════════════════════════════════════════╗"
 echo "║  SRE Assessment — AKS Cluster Provisioning             ║"

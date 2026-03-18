@@ -10,7 +10,7 @@ NODES=3
 CPUS=4
 MEMORY=8192       # MB per node
 DISK="50g"
-K8S_VERSION="v1.29.2"
+K8S_VERSION="v1.32.0"
 
 echo "=== Creating minikube cluster: $PROFILE ==="
 minikube start \
