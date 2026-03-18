@@ -34,17 +34,20 @@ ports:
     containerPort: 9411
     hostPort: 9411
     protocol: TCP
-  zpages:
-    enabled: true
-    containerPort: 55679
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
 
 presets:
   hostMetrics:
-    enabled: true
+    enabled: false
   kubernetesAttributes:
-    enabled: true
+    enabled: false
   kubeletMetrics:
-    enabled: true
+    enabled: false
 
 config:
   receivers:
@@ -138,7 +141,7 @@ config:
       logs:
         level: info
       metrics:
-        address: 0.0.0.0:8888
+        address: 0.0.0.0:8889
     pipelines:
       traces:
         receivers: [otlp, zipkin]

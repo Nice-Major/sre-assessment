@@ -18,4 +18,6 @@ spec:
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "service.version=1.0.0,deployment.environment=assessment"
             - name: NODE_OPTIONS
-              value: "--require ./tracing.js"
+              value: ""
+            # NOTE: To enable custom tracing, build a custom image with tracing.js
+            # and set NODE_OPTIONS to "--require ./tracing.js"

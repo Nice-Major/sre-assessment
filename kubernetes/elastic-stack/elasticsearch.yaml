@@ -10,24 +10,21 @@ spec:
       count: 1
       config:
         node.store.allow_mmap: false
-        # Single-node discovery for assessment environment
-        discovery.type: single-node
         xpack.security.enabled: true
-        xpack.security.http.ssl.enabled: false       # Simplify for local dev
-        xpack.security.transport.ssl.enabled: false
+        xpack.security.http.ssl.enabled: false       # Simplify for assessment
       podTemplate:
         spec:
           containers:
             - name: elasticsearch
               resources:
                 requests:
-                  memory: 4Gi
-                  cpu: "2"
+                  memory: 2Gi
+                  cpu: "1"
                 limits:
-                  memory: 4Gi
+                  memory: 2Gi
               env:
                 - name: ES_JAVA_OPTS
-                  value: "-Xms2g -Xmx2g"
+                  value: "-Xms1g -Xmx1g"
           initContainers:
             - name: sysctl
               securityContext:

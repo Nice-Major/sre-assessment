@@ -11,7 +11,6 @@ spec:
   config:
     server.publicBaseUrl: "http://localhost:5601"
     xpack.fleet.agents.elasticsearch.hosts: ["http://elasticsearch-es-http.elastic.svc.cluster.local:9200"]
-    xpack.fleet.agents.fleet-server.hosts: ["http://fleet-server-agent-http.elastic.svc.cluster.local:8220"]
     # Enable Fleet for Elastic Agent management
     xpack.fleet.packages:
       - name: system
