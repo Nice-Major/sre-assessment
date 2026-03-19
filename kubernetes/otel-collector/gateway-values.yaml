@@ -54,11 +54,11 @@ image:
 
 resources:
   requests:
-    cpu: 100m
-    memory: 256Mi
-  limits:
-    cpu: 500m
+    cpu: 200m
     memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
 
 ports:
   otlp:
@@ -91,7 +91,7 @@ config:
     # Higher memory limit than Agent because Gateway buffers complete traces
     memory_limiter:
       check_interval: 5s
-      limit_mib: 800
+      limit_mib: 900
       spike_limit_mib: 200
 
     # Larger batch size for efficiency (fewer but larger exports)

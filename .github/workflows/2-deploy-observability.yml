@@ -254,20 +254,24 @@ jobs:
           echo "Deploying OTel Collector Gateway (central sampling + export)..."
           helm upgrade --install otel-gateway open-telemetry/opentelemetry-collector \
             --namespace otel-system \
+            --create-namespace \
             --values kubernetes/otel-collector/gateway-values.yaml \
-            --wait --timeout 5m
+            --wait --timeout 10m
 
           echo "✅ OTel Gateway deployed"
+          kubectl get pods -n otel-system -l app.kubernetes.io/instance=otel-gateway
 
       - name: Deploy OTel Collector Agent
         run: |
           echo "Deploying OTel Collector Agent (per-node telemetry collection)..."
           helm upgrade --install otel-agent open-telemetry/opentelemetry-collector \
             --namespace otel-system \
+            --create-namespace \
             --values kubernetes/otel-collector/agent-values.yaml \
-            --wait --timeout 5m
+            --wait --timeout 10m
 
           echo "✅ OTel Agent deployed"
+          kubectl get pods -n otel-system -l app.kubernetes.io/instance=otel-agent
 
       # -----------------------------------------------------------------------
       # VERIFY EVERYTHING
