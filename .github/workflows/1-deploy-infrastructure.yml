@@ -132,21 +132,25 @@ jobs:
           echo "  Network: Azure CNI + Calico (for network policy flow logs)"
           echo "  This takes 5-10 minutes..."
 
-          az aks create \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --name ${{ env.CLUSTER_NAME }} \
-            --node-count ${{ env.NODE_COUNT }} \
-            --node-vm-size ${{ env.NODE_SIZE }} \
-            --network-plugin azure \
-            --network-policy calico \
-            --kubernetes-version 1.32 \
-            --enable-managed-identity \
-            --generate-ssh-keys \
-            --tier free \
-            --location ${{ env.LOCATION }} \
-            --tags project=sre-assessment
-
-          echo "✅ AKS cluster created successfully"
+          # Check if cluster already exists (idempotent)
+          if az aks show --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} &>/dev/null; then
+            echo "✅ AKS cluster already exists, skipping creation"
+          else
+            az aks create \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --name ${{ env.CLUSTER_NAME }} \
+              --node-count ${{ env.NODE_COUNT }} \
+              --node-vm-size ${{ env.NODE_SIZE }} \
+              --network-plugin azure \
+              --network-policy calico \
+              --kubernetes-version 1.32 \
+              --enable-managed-identity \
+              --generate-ssh-keys \
+              --tier free \
+              --location ${{ env.LOCATION }} \
+              --tags project=sre-assessment
+            echo "✅ AKS cluster created successfully"
+          fi
 
       # -----------------------------------------------------------------------
       # Step 5: Get credentials so kubectl can talk to the cluster
