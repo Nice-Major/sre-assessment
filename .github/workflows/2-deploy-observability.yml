@@ -176,6 +176,7 @@ jobs:
           echo "Deploying NGINX Ingress Controller (public load balancer)..."
           helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
             --namespace ingress-nginx \
+            --create-namespace \
             --values kubernetes/ingress/nginx-values.yaml \
             --wait --timeout 5m
 
