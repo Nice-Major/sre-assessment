@@ -144,8 +144,7 @@ jobs:
             --generate-ssh-keys \
             --tier free \
             --location ${{ env.LOCATION }} \
-            --tags project=sre-assessment \
-            --no-wait false
+            --tags project=sre-assessment
 
           echo "✅ AKS cluster created successfully"
 
