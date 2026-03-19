@@ -55,6 +55,7 @@ resources:
     memory: 512Mi
 
 # Expose OTLP ports on the host so pods can send data via the node's IP
+# Disable the default prometheus port (8888) to avoid conflict with collector telemetry.
 ports:
   otlp:
     enabled: true
@@ -66,6 +67,8 @@ ports:
     containerPort: 4318
     hostPort: 4318
     protocol: TCP
+  prometheus:
+    enabled: false
 
 config:
   # ---------------------------------------------------------------------------
@@ -180,9 +183,6 @@ config:
   # ---------------------------------------------------------------------------
   service:
     extensions: [health_check, zpages]
-    telemetry:
-      metrics:
-        address: "0.0.0.0:9999"
     pipelines:
       # Trace pipeline: app traces → enrich with K8s metadata → send to Gateway
       traces:

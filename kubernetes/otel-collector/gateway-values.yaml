@@ -60,6 +60,9 @@ resources:
     cpu: "1"
     memory: 1Gi
 
+# Disable the chart's default prometheus port (8888) to avoid conflict
+# with the OTel Collector's built-in telemetry metrics listener on 8888.
+# We don't need a separate metrics port — the collector's own telemetry is sufficient.
 ports:
   otlp:
     enabled: true
@@ -71,11 +74,8 @@ ports:
     containerPort: 4318
     servicePort: 4318
     protocol: TCP
-  metrics:
-    enabled: true
-    containerPort: 9999
-    servicePort: 9999
-    protocol: TCP
+  prometheus:
+    enabled: false
 
 config:
   # ---------------------------------------------------------------------------
@@ -166,9 +166,6 @@ config:
   # ---------------------------------------------------------------------------
   service:
     extensions: [health_check, zpages]
-    telemetry:
-      metrics:
-        address: "0.0.0.0:9999"
     pipelines:
       # Traces go through tail_sampling BEFORE batch and export
       traces:
