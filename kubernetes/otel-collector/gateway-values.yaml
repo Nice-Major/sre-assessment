@@ -48,9 +48,8 @@
 mode: deployment
 replicaCount: 1
 
-image:
-  repository: otel/opentelemetry-collector-contrib
-  tag: "0.97.0"
+# Use the chart's default image (otel/opentelemetry-collector-contrib matching chart version)
+# Do NOT pin an old version — the chart generates config that matches its appVersion.
 
 resources:
   requests:
