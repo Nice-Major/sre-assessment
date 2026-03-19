@@ -180,6 +180,9 @@ config:
   # ---------------------------------------------------------------------------
   service:
     extensions: [health_check, zpages]
+    telemetry:
+      metrics:
+        address: "0.0.0.0:9999"
     pipelines:
       # Trace pipeline: app traces → enrich with K8s metadata → send to Gateway
       traces:

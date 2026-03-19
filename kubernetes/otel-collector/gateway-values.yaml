@@ -71,6 +71,11 @@ ports:
     containerPort: 4318
     servicePort: 4318
     protocol: TCP
+  metrics:
+    enabled: true
+    containerPort: 9999
+    servicePort: 9999
+    protocol: TCP
 
 config:
   # ---------------------------------------------------------------------------
@@ -161,6 +166,9 @@ config:
   # ---------------------------------------------------------------------------
   service:
     extensions: [health_check, zpages]
+    telemetry:
+      metrics:
+        address: "0.0.0.0:9999"
     pipelines:
       # Traces go through tail_sampling BEFORE batch and export
       traces:
