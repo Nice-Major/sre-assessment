@@ -1,65 +1,21 @@
 # =============================================================================
 # INSTRUMENTATION PATCH: Frontend (Go)
 # =============================================================================
-# PURPOSE:
-#   This patch adds OpenTelemetry configuration to the frontend Deployment.
-#   It does NOT modify the application code or Docker image — it only sets
-#   environment variables that the OTel SDK (already built into the image)
-#   reads at startup.
-#
-# HOW IT WORKS:
-#   The Google Online Boutique images already include OpenTelemetry SDK
-#   auto-instrumentation for their respective languages. By default, the
-#   SDK is dormant (no exporter configured). When we set these env vars:
-#
-#   OTEL_EXPORTER_OTLP_ENDPOINT
-#     → Tells the SDK WHERE to send traces/metrics/logs
-#     → Points to the OTel Agent running on the same node (DaemonSet)
-#     → The Agent enriches data with K8s metadata and forwards to Gateway
-#
-#   OTEL_SERVICE_NAME
-#     → Identifies this service in traces (shown in Kibana APM)
-#
-#   OTEL_RESOURCE_ATTRIBUTES
-#     → Adds version and environment labels to every telemetry item
-#     → Useful for filtering in dashboards (e.g., "show only v1.0.0")
-#
-# DATA FLOW AFTER PATCHING:
-#   Frontend pod (Go + OTel SDK)
-#     → sends OTLP gRPC to port 4317
-#     → OTel Agent (same node, DaemonSet)
-#     → OTel Gateway (central, tail sampling)
-#     → APM Server
-#     → Elasticsearch
-#     → visible in Kibana APM as "frontend" service
-#
-# THE 3 INSTRUMENTED SERVICES:
-#   We patch 3 services in 3 different languages to demonstrate breadth:
-#   1. frontend (Go) — THIS FILE
-#   2. cartservice (C#/.NET)
-#   3. paymentservice (Node.js)
+# Applied via: kubectl patch deployment frontend -n online-boutique --patch-file
+# Adds OTel environment variables so the built-in SDK sends telemetry to the OTel Agent.
 # =============================================================================
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: frontend
-  namespace: online-boutique
 spec:
   template:
     spec:
       containers:
         - name: server
           env:
-            # Where to send telemetry — OTel Agent on the same node
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-agent-opentelemetry-collector.otel-system.svc.cluster.local:4317"
-            # Service identity in traces
             - name: OTEL_SERVICE_NAME
               value: "frontend"
-            # Additional resource attributes for filtering
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "service.version=1.0.0,deployment.environment=assessment"
-            # Explicitly enable OTLP exporters for all signal types
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER

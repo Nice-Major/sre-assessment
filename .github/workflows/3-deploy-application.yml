@@ -125,10 +125,16 @@ jobs:
         run: |
           echo "Patching services with OTel configuration..."
 
+          # Use kubectl patch (strategic merge) instead of kubectl apply.
+          # Our patch files are partial specs — they only contain env vars.
+          # kubectl apply expects a complete resource; kubectl patch merges into existing.
           for patch in instrumentation/*/k8s-patch.yaml; do
             service=$(basename $(dirname "$patch"))
-            echo "  Patching $service..."
-            kubectl apply -f "$patch"
+            echo "  Patching $service with OTel env vars..."
+            kubectl patch deployment "$service" \
+              -n online-boutique \
+              --type strategic \
+              --patch-file "$patch" || echo "  ⚠️ Patch for $service skipped (may not exist)"
           done
 
           echo "Waiting for patched pods to restart..."

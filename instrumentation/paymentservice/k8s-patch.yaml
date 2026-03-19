@@ -1,36 +1,14 @@
 # =============================================================================
 # INSTRUMENTATION PATCH: Payment Service (Node.js)
 # =============================================================================
-# PURPOSE:
-#   Adds OTel environment variables to the paymentservice Deployment.
-#   Same approach as frontend and cartservice patches.
-#
-#   Payment Service is interesting for observability because:
-#   - It processes payments (simulated) — business-critical path
-#   - Payment failures are high-priority errors to detect quickly
-#   - Latency in payments directly impacts user experience
-#
-# NOTE ON GRPC ENDPOINT:
-#   Node.js OTel SDK requires "grpc://" prefix for gRPC endpoints.
-#   This is a quirk of the @opentelemetry/exporter-trace-otlp-grpc package.
-#
-# TRACES YOU'LL SEE IN KIBANA:
-#   During checkout:
-#   frontend → checkoutservice → paymentservice
-#   The payment span shows success/failure status and amount.
+# Applied via: kubectl patch deployment paymentservice -n online-boutique --patch-file
 # =============================================================================
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: paymentservice
-  namespace: online-boutique
 spec:
   template:
     spec:
       containers:
         - name: server
           env:
-            # Note: Node.js OTel SDK needs "http://" prefix (not "grpc://")
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-agent-opentelemetry-collector.otel-system.svc.cluster.local:4317"
             - name: OTEL_SERVICE_NAME
