@@ -11,7 +11,6 @@ spec:
       config:
         node.store.allow_mmap: false
         xpack.security.enabled: true
-        xpack.security.http.ssl.enabled: false       # Simplify for assessment
       podTemplate:
         spec:
           containers:
@@ -19,7 +18,7 @@ spec:
               resources:
                 requests:
                   memory: 2Gi
-                  cpu: "1"
+                  cpu: "500m"
                 limits:
                   memory: 2Gi
               env:

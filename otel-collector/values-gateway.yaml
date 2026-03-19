@@ -12,11 +12,11 @@ image:
 
 resources:
   requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
     cpu: 500m
     memory: 512Mi
-  limits:
-    cpu: "1"
-    memory: 1Gi
 
 ports:
   otlp:
@@ -28,8 +28,7 @@ ports:
     containerPort: 4318
     protocol: TCP
   zpages:
-    enabled: true
-    containerPort: 55679
+    enabled: false
   jaeger-compact:
     enabled: false
   jaeger-thrift:
@@ -38,6 +37,11 @@ ports:
     enabled: false
   zipkin:
     enabled: false
+  metrics:
+    enabled: true
+    containerPort: 9999
+    servicePort: 9999
+    protocol: TCP
 
 config:
   receivers:
@@ -81,12 +85,10 @@ config:
             sampling_percentage: 10
 
   exporters:
-    otlp/elastic:
+    otlphttp/elastic:
       endpoint: "http://apm-server-apm-http.elastic.svc.cluster.local:8200"
       headers:
         Authorization: "Bearer assessment-secret-token"
-      tls:
-        insecure: true
       retry_on_failure:
         enabled: true
         initial_interval: 5s
@@ -107,17 +109,17 @@ config:
       logs:
         level: info
       metrics:
-        address: 0.0.0.0:8889
+        level: none
     pipelines:
       traces:
         receivers: [otlp]
         processors: [memory_limiter, tail_sampling, batch]
-        exporters: [otlp/elastic]
+        exporters: [otlphttp/elastic]
       metrics:
         receivers: [otlp]
         processors: [memory_limiter, batch]
-        exporters: [otlp/elastic]
+        exporters: [otlphttp/elastic]
       logs:
         receivers: [otlp]
         processors: [memory_limiter, batch]
-        exporters: [otlp/elastic]
+        exporters: [otlphttp/elastic]

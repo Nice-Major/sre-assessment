@@ -23,9 +23,6 @@ spec:
         library_pattern: "node_modules|bower_components|~"
       # OTLP receiver for OTel Collector
       # APM Server natively accepts OTLP on :8200
-    output:
-      elasticsearch:
-        hosts: ["http://elasticsearch-es-http.elastic.svc.cluster.local:9200"]
   http:
     tls:
       selfSignedCertificate:
