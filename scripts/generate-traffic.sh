@@ -11,7 +11,14 @@
 # =============================================================================
 set -euo pipefail
 
-FRONTEND_URL="${FRONTEND_URL:-http://localhost:8080}"
+# Auto-detect Frontend URL via Ingress IP (no port-forwarding needed)
+INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+if [ -n "$INGRESS_IP" ]; then
+  FRONTEND_URL="${FRONTEND_URL:-http://${INGRESS_IP}}"
+else
+  FRONTEND_URL="${FRONTEND_URL:-http://localhost:8080}"
+  echo "WARNING: No Ingress IP found. Falling back to localhost (requires port-forward)."
+fi
 ITERATIONS="${1:-50}"
 SLEEP_BETWEEN="${SLEEP_BETWEEN:-1}"
 

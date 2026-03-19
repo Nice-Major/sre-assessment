@@ -10,19 +10,20 @@
     2. Add this block inside <head> before the closing </head> tag
     3. Rebuild the frontend Docker image
 
-  The APM Server URL must be accessible from the browser. If running
-  locally, port-forward the APM Server:
-    kubectl port-forward svc/apm-server-apm-http 8200:8200 -n elastic
+  The APM Server URL must be accessible from the browser.
+  The APM Server is exposed via Ingress at:
+    http://apm.<INGRESS_IP>.nip.io
 
-  For production, expose APM Server via Ingress with CORS headers.
+  For local development fallback, port-forward:
+    kubectl port-forward svc/apm-server-apm-http 8200:8200 -n elastic
 ========================================================================== -->
 
 <script src="https://unpkg.com/@elastic/apm-rum@5.16.0/dist/bundles/elastic-apm-rum.umd.min.js" crossorigin></script>
 <script>
   (function() {
-    // ── APM Server endpoint (browser-accessible) ──
-    // Update this to match your exposed APM Server URL
-    var APM_SERVER_URL = 'http://localhost:8200';
+    // ── APM Server endpoint (browser-accessible via Ingress) ──
+    // Replace <INGRESS_IP> with your cluster's external IP
+    var APM_SERVER_URL = 'http://apm.' + window.location.hostname.split('.').slice(-4).join('.').replace(/^[^.]+\./, '') || 'http://apm.INGRESS_IP.nip.io';
 
     var apm = window.elasticApm.init({
       serviceName: 'frontend-rum',
@@ -32,8 +33,6 @@
 
       // Enable distributed tracing headers on outbound requests
       distributedTracingOrigins: [
-        'http://boutique.local',
-        'http://localhost:8080',
         window.location.origin
       ],
 

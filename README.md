@@ -124,21 +124,20 @@ kubectl patch deployment paymentservice -n online-boutique --patch-file instrume
 
 ## Accessing Services
 
-After deployment, set up port-forwards:
+All services are exposed via the NGINX Ingress Controller at the cluster's external IP.
+No port-forwarding required.
 
+| Service | URL | Notes |
+|---|---|---|
+| **Online Boutique** | `http://<INGRESS_IP>` | Direct access via public IP |
+| **Kibana** | `http://kibana.<INGRESS_IP>.nip.io` | Login: elastic / `<password>` |
+| **APM Server** | `http://apm.<INGRESS_IP>.nip.io` | For RUM browser agent |
+
+> `nip.io` is a wildcard DNS that resolves `*.IP.nip.io` to that IP. No `/etc/hosts` changes needed.
+
+**Get the Ingress IP:**
 ```bash
-# Kibana (dashboards + APM UI) — uses HTTPS with self-signed cert
-kubectl port-forward svc/kibana-kb-http 5601:5601 -n elastic
-# Open: https://localhost:5601
-
-# Frontend (Online Boutique)
-kubectl port-forward svc/frontend 8080:80 -n online-boutique
-
-# APM Server (for RUM — browser needs direct access)
-kubectl port-forward svc/apm-server-apm-http 8200:8200 -n elastic
-
-# OTel Collector zpages (collector health monitoring)
-kubectl port-forward svc/otel-gateway-opentelemetry-collector 55679:55679 -n otel-system
+kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
 **Kibana credentials:**
@@ -165,8 +164,9 @@ Open Kibana → Fleet → Agent policies and configure:
 
 ### 3. Create alerting rules
 ```bash
-# Port-forward Kibana first, then:
-KIBANA_URL=http://localhost:5601 bash infrastructure/alerting-rules/create-alerting-rules.sh
+# Uses Ingress-based Kibana URL
+INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+KIBANA_URL="http://kibana.${INGRESS_IP}.nip.io" bash infrastructure/alerting-rules/create-alerting-rules.sh
 ```
 
 ### 4. Create dashboards
@@ -174,7 +174,8 @@ Follow the guide in `dashboards/DASHBOARD-GUIDE.md` to create the three required
 
 ### 5. Export dashboards
 ```bash
-KIBANA_URL=http://localhost:5601 bash scripts/export-dashboards.sh
+INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+KIBANA_URL="http://kibana.${INGRESS_IP}.nip.io" bash scripts/export-dashboards.sh
 ```
 
 ## Verification Checklist
@@ -187,7 +188,7 @@ KIBANA_URL=http://localhost:5601 bash scripts/export-dashboards.sh
 - [ ] Service Map shows connected services: Kibana → APM → Service Map
 - [ ] Custom spans visible on transactions (validate-cart-contents, process-payment-charge, etc.)
 - [ ] Custom metrics queryable in Kibana → Observability → Metrics Explorer
-- [ ] Collector health: http://localhost:55679/debug/tracez (zpages)
+- [ ] Collector health via zpages (accessible inside cluster or via port-forward if needed)
 
 ### Section 2: RUM + Dashboards
 - [ ] RUM data in Kibana → Observability → User Experience
@@ -252,8 +253,8 @@ sre-assessment/
 ## Known Limitations
 
 1. **Single-node Elasticsearch:** Sufficient for assessment; not HA. Production would use 3+ nodes.
-2. **minikube resource constraints:** All components share host resources. Monitor with `minikube ssh -- top`.
+2. **AKS resource constraints:** 2 nodes with 4 vCPU each. Monitor with `kubectl top nodes`.
 3. **Custom instrumentation requires image rebuild:** The OTel SDK code (otel_init.go, OtelConfig.cs, tracing.js) must be compiled into new Docker images. K8s patches inject env vars but the SDK init code needs to be in the image.
-4. **RUM requires browser-accessible APM Server:** Must port-forward or create an Ingress for the APM Server for RUM to work.
+4. **RUM APM Server:** Exposed via Ingress at `http://apm.<INGRESS_IP>.nip.io` for browser-to-backend tracing.
 5. **Calico flow logs:** Depend on Calico CNI being properly installed. If using a different CNI, flow log collection will need adaptation.
 6. **Dashboard NDJSON files:** Placeholder until dashboards are created in Kibana and exported. Run `scripts/export-dashboards.sh` after building dashboards.

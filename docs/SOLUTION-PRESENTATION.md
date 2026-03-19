@@ -150,3 +150,4 @@ https://github.com/Nice-Major/sre-assessment
 3. Single Elasticsearch node — not HA, acceptable for assessment scope.
 4. RUM requires APM Server port-forward to be accessible from the browser.
 5. OTel Gateway exports via OTLP HTTP (not gRPC) to APM Server — this is a compatibility requirement with Elastic APM Server 8.x.
+6. **All services accessible via Ingress** at the cluster's public IP — no port-forwarding required for any service.

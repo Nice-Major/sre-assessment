@@ -24,8 +24,8 @@ before the closing `</head>` tag.
 The `APM_SERVER_URL` variable in the script must point to a browser-accessible
 APM Server endpoint:
 
-- **Local development:** `http://localhost:8200` (with port-forward)
-- **Via Ingress:** Create an Ingress rule for the APM Server
+- **Via Ingress (recommended):** `http://apm.<INGRESS_IP>.nip.io`
+- **Fallback (local dev):** `http://localhost:8200` (with port-forward)
 
 ### 5. Verify CORS configuration
 The APM Server must accept RUM data from the frontend origin.

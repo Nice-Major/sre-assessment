@@ -9,7 +9,7 @@ spec:
   elasticsearchRef:
     name: elasticsearch
   config:
-    server.publicBaseUrl: "http://localhost:5601"
+    server.publicBaseUrl: "http://kibana.INGRESS_IP.nip.io"
     xpack.fleet.agents.elasticsearch.hosts: ["http://elasticsearch-es-http.elastic.svc.cluster.local:9200"]
     # Enable Fleet for Elastic Agent management
     xpack.fleet.packages:

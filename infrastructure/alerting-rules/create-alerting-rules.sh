@@ -11,7 +11,14 @@
 # =============================================================================
 set -euo pipefail
 
-KIBANA_URL="${KIBANA_URL:-http://localhost:5601}"
+# Auto-detect Ingress IP for Kibana URL (no port-forwarding needed)
+INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+if [ -n "$INGRESS_IP" ]; then
+  KIBANA_URL="${KIBANA_URL:-http://kibana.${INGRESS_IP}.nip.io}"
+else
+  KIBANA_URL="${KIBANA_URL:-https://localhost:5601}"
+  echo "WARNING: No Ingress IP found. Falling back to localhost (requires port-forward)."
+fi
 ES_PASSWORD=$(kubectl get secret elasticsearch-es-elastic-user -n elastic -o jsonpath='{.data.elastic}' | base64 -d)
 AUTH="elastic:${ES_PASSWORD}"
 
