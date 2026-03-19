@@ -69,7 +69,19 @@ spec:
               app: frontend
       ports:
         - protocol: TCP
-          port: 7070  # gRPC port used by Online Boutique services
+          port: 7070
+        - protocol: TCP
+          port: 7000
+        - protocol: TCP
+          port: 3550
+        - protocol: TCP
+          port: 50051
+        - protocol: TCP
+          port: 5050
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9555
 
 ---
 # 4. Allow checkoutservice to call payment, shipping, cart, currency, email
@@ -99,6 +111,14 @@ spec:
       ports:
         - protocol: TCP
           port: 7070
+        - protocol: TCP
+          port: 7000
+        - protocol: TCP
+          port: 50051
+        - protocol: TCP
+          port: 5000
+        - protocol: TCP
+          port: 8080
 
 ---
 # 5. Allow cartservice to access Redis
@@ -142,7 +162,7 @@ spec:
               app: recommendationservice
       ports:
         - protocol: TCP
-          port: 7070
+          port: 3550
 
 ---
 # 7. Allow all pods to reach the OTel Agent (telemetry egress)
