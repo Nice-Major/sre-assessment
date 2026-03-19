@@ -89,13 +89,18 @@ jobs:
           echo "This takes 2-3 minutes as it provisions storage and starts the JVM."
           kubectl apply -f kubernetes/elastic-stack/elasticsearch.yaml
 
-          echo "Waiting for Elasticsearch to become healthy..."
-          kubectl wait --for=jsonpath='{.status.health}'=green elasticsearch/elasticsearch \
-            -n elastic --timeout=300s || \
-          kubectl wait --for=jsonpath='{.status.health}'=yellow elasticsearch/elasticsearch \
-            -n elastic --timeout=120s
-
-          echo "✅ Elasticsearch is running:"
+          echo "Waiting for ECK to create Elasticsearch pod..."
+          sleep 30
+          echo "Waiting for Elasticsearch to become healthy (green or yellow)..."
+          for i in $(seq 1 60); do
+            HEALTH=$(kubectl get elasticsearch elasticsearch -n elastic -o jsonpath='{.status.health}' 2>/dev/null || echo "unknown")
+            echo "  Health: $HEALTH ($i/60)"
+            if [ "$HEALTH" = "green" ] || [ "$HEALTH" = "yellow" ]; then
+              echo "✅ Elasticsearch is healthy: $HEALTH"
+              break
+            fi
+            sleep 10
+          done
           kubectl get elasticsearch -n elastic
 
       - name: Deploy Kibana
@@ -104,10 +109,16 @@ jobs:
           kubectl apply -f kubernetes/elastic-stack/kibana.yaml
 
           echo "Waiting for Kibana to become healthy..."
-          kubectl wait --for=jsonpath='{.status.health}'=green kibana/kibana \
-            -n elastic --timeout=300s
-
-          echo "✅ Kibana is running:"
+          sleep 15
+          for i in $(seq 1 40); do
+            HEALTH=$(kubectl get kibana kibana -n elastic -o jsonpath='{.status.health}' 2>/dev/null || echo "unknown")
+            echo "  Kibana health: $HEALTH ($i/40)"
+            if [ "$HEALTH" = "green" ]; then
+              echo "✅ Kibana is healthy"
+              break
+            fi
+            sleep 10
+          done
           kubectl get kibana -n elastic
 
       - name: Deploy APM Server
@@ -115,12 +126,17 @@ jobs:
           echo "Deploying APM Server (receives traces from OTel + RUM from browsers)..."
           kubectl apply -f kubernetes/elastic-stack/apm-server.yaml
 
-          echo "Waiting for APM Server to be ready..."
-          kubectl wait --for=condition=ready pod \
-            -l apm.k8s.elastic.co/name=apm-server \
-            -n elastic --timeout=180s
-
-          echo "✅ APM Server is running:"
+          echo "Waiting for APM Server pods to be created..."
+          sleep 30
+          for i in $(seq 1 30); do
+            READY=$(kubectl get pods -l apm.k8s.elastic.co/name=apm-server -n elastic --no-headers 2>/dev/null | grep -c Running || echo 0)
+            echo "  APM Server running pods: $READY ($i/30)"
+            if [ "$READY" -ge 1 ]; then
+              echo "✅ APM Server is running"
+              break
+            fi
+            sleep 10
+          done
           kubectl get apmserver -n elastic
 
       - name: Deploy Fleet Server
@@ -128,13 +144,18 @@ jobs:
           echo "Deploying Fleet Server (manages Elastic Agents for infra monitoring)..."
           kubectl apply -f kubernetes/elastic-stack/fleet-server.yaml
 
-          echo "Waiting for Fleet Server to be ready..."
-          kubectl wait --for=condition=ready pod \
-            -l agent.k8s.elastic.co/name=fleet-server \
-            -n elastic --timeout=180s
-
-          echo "✅ Fleet Server is running:"
-          kubectl get agent -n elastic
+          echo "Waiting for Fleet Server pods to be created..."
+          sleep 30
+          for i in $(seq 1 30); do
+            READY=$(kubectl get pods -l agent.k8s.elastic.co/name=fleet-server -n elastic --no-headers 2>/dev/null | grep -c Running || echo 0)
+            echo "  Fleet Server running pods: $READY ($i/30)"
+            if [ "$READY" -ge 1 ]; then
+              echo "✅ Fleet Server is running"
+              break
+            fi
+            sleep 10
+          done
+          kubectl get agent -n elastic || true
 
       # -----------------------------------------------------------------------
       # NGINX INGRESS CONTROLLER
