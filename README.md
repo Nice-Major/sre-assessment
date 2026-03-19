@@ -1,6 +1,6 @@
 # SRE Practical Assessment — Full Implementation
 
-Production-grade observability and infrastructure monitoring for the Google Online Boutique (11 polyglot microservices) using **Elastic Stack** and **OpenTelemetry**, deployed on Kubernetes.
+Production-grade observability and infrastructure monitoring for the Google Online Boutique (11 polyglot microservices) using **Elastic Stack** and **OpenTelemetry**, deployed on **Azure Kubernetes Service (AKS)**.
 
 ## Architecture Overview
 
@@ -12,7 +12,7 @@ Production-grade observability and infrastructure monitoring for the Google Onli
                │ (distributed tracing headers)
 ┌──────────────▼───────────────────────────────────────────────────────┐
 │  NGINX Ingress Controller                                             │
-│  metrics → Elastic Agent │ access logs → Filebeat                     │
+│  metrics → Elastic Agent │ access logs → JSON structured              │
 └──────────────┬───────────────────────────────────────────────────────┘
                │
 ┌──────────────▼───────────────────────────────────────────────────────┐
@@ -41,14 +41,14 @@ Production-grade observability and infrastructure monitoring for the Google Onli
 ┌──────────────────────────▼───────────────────────────────────────────┐
 │  OTel Collector — Gateway (Deployment)                                │
 │  processors: memory_limiter, tail_sampling, batch                    │
-│  exports → Elastic APM Server (OTLP :8200)                           │
+│  exports → Elastic APM Server (OTLP HTTP :8200)                      │
 └──────────────────────────┬───────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────────────────┐
-│  Elastic Stack (elastic namespace)                                    │
+│  Elastic Stack (elastic namespace, managed by ECK)                    │
 │  ┌─────────────┐  ┌────────┐  ┌────────────┐  ┌─────────────────┐   │
 │  │Elasticsearch│  │ Kibana │  │ APM Server │  │ Fleet Server    │   │
-│  │ (data store)│  │ (UI)   │  │ (OTLP+RUM) │  │ (agent mgmt)   │   │
+│  │ (HTTPS/TLS) │  │ (UI)   │  │ (OTLP+RUM) │  │ (agent mgmt)   │   │
 │  └─────────────┘  └────────┘  └────────────┘  └─────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -57,27 +57,34 @@ Production-grade observability and infrastructure monitoring for the Google Onli
 
 | Tool | Version | Install |
 |---|---|---|
-| Docker | 24+ | https://docs.docker.com/get-docker/ |
-| minikube | 1.32+ | https://minikube.sigs.k8s.io/docs/start/ |
-| kubectl | 1.29+ | https://kubernetes.io/docs/tasks/tools/ |
+| Azure CLI | 2.x | https://docs.microsoft.com/cli/azure/install-azure-cli |
+| kubectl | 1.32+ | https://kubernetes.io/docs/tasks/tools/ |
 | Helm | 3.14+ | https://helm.sh/docs/intro/install/ |
-| curl | any | Pre-installed on most systems |
+| GitHub CLI | 2.x | https://cli.github.com/ |
 
-**System requirements:**
-- RAM: 16 GB minimum (32 GB recommended)
-- CPU: 8+ cores
-- Disk: 50 GB free
+**Azure resources:**
+- AKS cluster: 2x Standard_D4ads_v6 (4 vCPU, 16 GB RAM each)
+- Region: North Europe
+- Network Policy: Calico
+- Kubernetes: v1.32
 
 ## Quick Start
 
-### One-command deployment:
+### Azure AKS Deployment:
 ```bash
+# 1. Login to Azure
+az login
+
+# 2. Provision AKS cluster
+bash scripts/provision-aks.sh
+
+# 3. Deploy everything
 bash scripts/deploy-all.sh
 ```
 
 This deploys everything in order (takes ~15-20 minutes):
-1. 3-node minikube cluster with Calico CNI
-2. Elastic Stack (Elasticsearch, Kibana, APM Server, Fleet Server)
+1. AKS cluster with 2 nodes and Calico CNI
+2. Elastic Stack (Elasticsearch, Kibana, APM Server, Fleet Server) via ECK
 3. NGINX Ingress Controller
 4. Google Online Boutique + PostgreSQL
 5. OpenTelemetry Collector (Gateway + Agent)
@@ -120,8 +127,9 @@ kubectl patch deployment paymentservice -n online-boutique --patch-file instrume
 After deployment, set up port-forwards:
 
 ```bash
-# Kibana (dashboards + APM UI)
+# Kibana (dashboards + APM UI) — uses HTTPS with self-signed cert
 kubectl port-forward svc/kibana-kb-http 5601:5601 -n elastic
+# Open: https://localhost:5601
 
 # Frontend (Online Boutique)
 kubectl port-forward svc/frontend 8080:80 -n online-boutique
@@ -172,7 +180,7 @@ KIBANA_URL=http://localhost:5601 bash scripts/export-dashboards.sh
 ## Verification Checklist
 
 ### Section 1: OpenTelemetry Implementation
-- [ ] OTel Agent DaemonSet running on all 3 nodes: `kubectl get pods -n otel-system -o wide`
+- [ ] OTel Agent DaemonSet running on all 2 nodes: `kubectl get pods -n otel-system -o wide`
 - [ ] OTel Gateway running: `kubectl get pods -n otel-system`
 - [ ] Services visible in Kibana → Observability → APM → Services
 - [ ] Traces visible in Kibana → Observability → APM → Traces

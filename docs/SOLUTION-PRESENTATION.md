@@ -1,7 +1,7 @@
 # SRE Assessment — Solution Presentation
 > **Candidate:** John Victor Aniekwe  
 > **Assessment:** ELK + OpenTelemetry Observability Implementation  
-> **Duration:** 24 hours  
+> **Platform:** Azure Kubernetes Service (AKS)  
 > **Scoring:** 3 sections (40% / 30% / 30%), passing threshold 70%
 
 ---
@@ -11,7 +11,7 @@
 A **complete production-grade observability platform** for a distributed microservices application (Google Online Boutique, 11 services), using the Elastic Stack and OpenTelemetry on Kubernetes.
 
 ### Summary in 4 Sentences
-1. Deployed a 3-node Kubernetes cluster with Elastic Stack, OTel Collector (Gateway + Agent topology), and NGINX Ingress Controller.
+1. Deployed a **2-node AKS cluster** (North Europe) with Elastic Stack (ECK), OTel Collector (Gateway + Agent topology), and NGINX Ingress Controller.
 2. Instrumented 3 services in 3 different languages (Go, C#, Node.js) with custom spans, custom metrics, and end-to-end distributed tracing flowing into Kibana APM.
 3. Implemented Real User Monitoring on the frontend with browser-to-backend trace correlation, Core Web Vitals, and 3 operational Kibana dashboards.
 4. Set up infrastructure monitoring across compute, PostgreSQL, Redis, network policies (Calico flow logs), and NGINX load balancer — with 11 alerting rules.
@@ -86,7 +86,7 @@ All dashboards exported as NDJSON and committed to `dashboards/`.
 
 | # | Decision | Rationale |
 |---|---|---|
-| 1 | minikube + Calico CNI | Free, fast, supports multi-node + network policy flow logs |
+| 1 | AKS + Calico CNI | Production-grade managed K8s; supports network policy flow logs |
 | 2 | Gateway + Agent OTel topology | Standard production pattern; centralizes sampling |
 | 3 | 100%/100%/10% sampling policy | Keep all errors + slow traces; 10% healthy for coverage |
 | 4 | Go + C# + Node.js services | Maximum language diversity; covers natural checkout flow |
@@ -101,22 +101,29 @@ Full details: `docs/DECISIONS.md`
 
 ---
 
-## How to Run
+## How to Access
 
 ```bash
-# One command deploys everything (~15-20 min)
-bash scripts/deploy-all.sh
+# Get AKS credentials
+az aks get-credentials -g sre-assessment-rg -n sre-assessment-aks --admin
 
-# Generate traffic
-bash scripts/generate-traffic.sh 100
-
-# Create alerting rules
-KIBANA_URL=http://localhost:5601 bash infrastructure/alerting-rules/create-alerting-rules.sh
-
-# Access Kibana
+# Kibana (HTTPS with self-signed cert)
 kubectl port-forward svc/kibana-kb-http 5601:5601 -n elastic
-# Open: http://localhost:5601
+# Open: https://localhost:5601  (elastic / <password from secret>)
+
+# Get Elasticsearch password
+kubectl get secret elasticsearch-es-elastic-user -n elastic -o jsonpath='{.data.elastic}' | base64 -d
+
+# Frontend (Online Boutique)
+kubectl port-forward svc/frontend 8080:80 -n online-boutique
+# Open: http://localhost:8080
+
+# Public Ingress IP
+kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
+
+## GitHub Repository
+https://github.com/Nice-Major/sre-assessment
 
 ---
 
@@ -138,7 +145,8 @@ kubectl port-forward svc/kibana-kb-http 5601:5601 -n elastic
 
 ## Known Limitations
 
-1. Custom instrumentation requires rebuilding Docker images for the 3 patched services. K8s patches inject env vars but the SDK code must be compiled in.
-2. Dashboard NDJSON files are placeholders until live dashboards are built and exported.
+1. Custom instrumentation requires rebuilding Docker images for the 3 patched services. K8s patches inject env vars but the SDK code must be compiled into the images.
+2. Dashboard NDJSON files are templates until live dashboards are built and exported from Kibana.
 3. Single Elasticsearch node — not HA, acceptable for assessment scope.
 4. RUM requires APM Server port-forward to be accessible from the browser.
+5. OTel Gateway exports via OTLP HTTP (not gRPC) to APM Server — this is a compatibility requirement with Elastic APM Server 8.x.

@@ -4,23 +4,24 @@ This document records the key architectural and implementation decisions made du
 
 ---
 
-## Decision 1: Kubernetes Cluster — minikube with Calico CNI
+## Decision 1: Kubernetes Cluster — Azure AKS with Calico CNI
 
-**Context:** The assessment requires a multi-node cluster (>2 nodes) with the ability to run Elastic Stack, 11 microservices, OpenTelemetry collectors, NGINX Ingress, and monitoring agents simultaneously.
+**Context:** The assessment requires a multi-node cluster with the ability to run Elastic Stack, 11 microservices, OpenTelemetry collectors, NGINX Ingress, and monitoring agents simultaneously.
 
-**Decision:** Use minikube with 3 nodes (1 control plane + 2 workers), docker driver, and Calico CNI.
+**Decision:** Use Azure Kubernetes Service (AKS) with 2 nodes (Standard_D4ads_v6, 4 vCPU / 16 GB each), Calico CNI, and managed identity.
 
 **Rationale:**
-- minikube supports multi-node out of the box with `--nodes=3`
+- AKS provides a production-grade managed Kubernetes environment
 - Calico CNI is required for Section 3.3 (Network Policy monitoring with flow logs)
-- Docker driver is stable on both Linux and macOS, widely available
-- 3 nodes fulfills the "more than 2 nodes" requirement
-- Alternative considered: kind (but Calico integration is less straightforward with kind)
-- Alternative considered: EKS/AKS (adds cloud costs and setup time for a timed assessment)
+- Standard_D4ads_v6 provides a good balance of compute and memory for the workload
+- Managed identity simplifies Azure RBAC and avoids credential management
+- 2 nodes with 4 vCPU each provides 8 vCPUs total, sufficient for all workloads
+- Region: North Europe (selected for subscription availability)
 
 **Trade-offs:**
-- minikube shares the host machine's resources, so sizing (8GB per node) is critical
-- No true HA; single-node failure takes down the control plane. Acceptable for assessment.
+- Cloud costs (~$0.40/hour) vs. free local minikube
+- 2 nodes (not 3+) due to subscription quota constraints; acceptable for assessment
+- Free tier AKS has no SLA; acceptable for assessment scope
 
 ---
 
