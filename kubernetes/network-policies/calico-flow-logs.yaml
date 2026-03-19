@@ -28,18 +28,10 @@
 #   - Write flow logs to /var/log/calico/flowlogs/ (flowLogsFileEnabled)
 #   - Flush every 15 seconds (flowLogsFlushInterval)
 #   - Include network set info (flowLogsEnableNetworkSets)
+# NOTE: FelixConfiguration CRD is not available on AKS (Azure manages Calico internally).
+# Calico flow logs are enabled via AKS configuration, not via CRDs.
+# The Filebeat DaemonSet below reads whatever logs Calico writes to /var/log/calico/.
 # =============================================================================
-
-# Configure Calico to write flow logs to disk
-apiVersion: projectcalico.org/v3
-kind: FelixConfiguration
-metadata:
-  name: default
-spec:
-  flowLogsFileEnabled: true
-  flowLogsFileDirectory: /var/log/calico/flowlogs
-  flowLogsFlushInterval: "15s"
-  flowLogsEnableNetworkSets: true
 
 ---
 # ServiceAccount for Filebeat to read Kubernetes metadata
