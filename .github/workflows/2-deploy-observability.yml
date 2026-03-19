@@ -144,17 +144,20 @@ jobs:
           echo "Deploying Fleet Server (manages Elastic Agents for infra monitoring)..."
           kubectl apply -f kubernetes/elastic-stack/fleet-server.yaml
 
-          echo "Waiting for Fleet Server pods to be created..."
-          sleep 30
-          for i in $(seq 1 30); do
+          # Fleet Server takes a while to register with Kibana/ES.
+          # Don't block — it's not required for NGINX or OTel steps.
+          echo "Waiting briefly for Fleet Server pod to appear..."
+          sleep 15
+          for i in $(seq 1 6); do
             READY=$(kubectl get pods -l agent.k8s.elastic.co/name=fleet-server -n elastic --no-headers 2>/dev/null | grep -c Running || echo 0)
-            echo "  Fleet Server running pods: $READY ($i/30)"
+            echo "  Fleet Server running pods: $READY ($i/6)"
             if [ "$READY" -ge 1 ]; then
               echo "✅ Fleet Server is running"
               break
             fi
             sleep 10
           done
+          echo "Fleet Server status (will continue starting in background):"
           kubectl get agent -n elastic || true
 
       # -----------------------------------------------------------------------
