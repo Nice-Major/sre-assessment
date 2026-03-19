@@ -80,6 +80,8 @@ ports:
 config:
   # ---------------------------------------------------------------------------
   # RECEIVERS: Accept data from OTel Agents
+  # Explicitly null out Helm chart defaults (jaeger, prometheus, zipkin)
+  # that we don't need — otherwise the chart merges them in.
   # ---------------------------------------------------------------------------
   receivers:
     otlp:
@@ -88,6 +90,9 @@ config:
           endpoint: "0.0.0.0:4317"
         http:
           endpoint: "0.0.0.0:4318"
+    jaeger: null
+    prometheus: null
+    zipkin: null
 
   # ---------------------------------------------------------------------------
   # PROCESSORS: Central sampling and batching
@@ -166,6 +171,12 @@ config:
   # ---------------------------------------------------------------------------
   service:
     extensions: [health_check, zpages]
+    # Override Helm chart default: move telemetry metrics from port 8888 to 9999
+    # The chart injects service.telemetry.metrics.readers with prometheus on 8888
+    # which conflicts with the collector binary's internal metrics on 8888.
+    telemetry:
+      metrics:
+        address: "0.0.0.0:9999"
     pipelines:
       # Traces go through tail_sampling BEFORE batch and export
       traces:
