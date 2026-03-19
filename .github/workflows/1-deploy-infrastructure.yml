@@ -212,15 +212,17 @@ jobs:
       - name: Install ECK Operator
         run: |
           echo "Installing ECK (Elastic Cloud on Kubernetes) operator..."
-          helm install elastic-operator elastic/eck-operator \
+          helm upgrade --install elastic-operator elastic/eck-operator \
             --namespace elastic-system \
             --create-namespace \
             --version 2.12.1 \
             --wait --timeout 5m
 
-          echo "Waiting for ECK operator to be ready..."
+          echo "Waiting for ECK operator pod to be ready..."
+          # The --wait flag on helm already ensures readiness, but let's
+          # also verify with kubectl using the app label from the Helm chart
           kubectl wait --for=condition=ready pod \
-            -l control-plane=elastic-operator \
+            -l app.kubernetes.io/name=elastic-operator \
             -n elastic-system \
             --timeout=120s
 
