@@ -1,260 +1,269 @@
-# SRE Practical Assessment — Full Implementation
+# SRE Practical Assessment — Complete Implementation
 
-Production-grade observability and infrastructure monitoring for the Google Online Boutique (11 polyglot microservices) using **Elastic Stack** and **OpenTelemetry**, deployed on **Azure Kubernetes Service (AKS)**.
+Production-grade observability platform for Google's [Online Boutique](https://github.com/GoogleCloudPlatform/microservices-demo) (11 polyglot microservices) using **Elastic Stack** + **OpenTelemetry** on **Azure Kubernetes Service (AKS)**, deployed via **GitHub Actions**.
 
-## Architecture Overview
+---
+
+## How Everything Connects (Architecture)
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Browser (RUM)                                                       │
-│  @elastic/apm-rum → APM Server                                       │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │ (distributed tracing headers)
-┌──────────────▼───────────────────────────────────────────────────────┐
-│  NGINX Ingress Controller                                             │
-│  metrics → Elastic Agent │ access logs → JSON structured              │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────────┐
-│  Online Boutique Microservices (online-boutique namespace)            │
-│                                                                       │
-│  ┌────────────┐  ┌──────────────┐  ┌────────────────┐               │
-│  │ frontend   │  │ cartservice  │  │ paymentservice │               │
-│  │ (Go+OTel)  │  │ (C#+OTel)   │  │ (Node.js+OTel) │               │
-│  └────┬───────┘  └──────┬───────┘  └────────┬───────┘               │
-│       │                  │                    │                       │
-│       │     ┌────────────▼──┐                 │                       │
-│       │     │ Redis (cart)  │                 │                       │
-│       │     └───────────────┘                 │                       │
-│       │                                       │                       │
-│  + productcatalog, currency, shipping, checkout, recommendation,     │
-│    ad, email, loadgenerator + PostgreSQL (for monitoring)            │
-└──────┬─────────────────────┬─────────────────┬───────────────────────┘
-       │ OTLP (gRPC:4317)   │                  │
-┌──────▼─────────────────────▼──────────────────▼──────────────────────┐
-│  OTel Collector — Agent (DaemonSet, per node)                        │
-│  receivers: OTLP, Zipkin, hostmetrics                                │
-│  processors: memory_limiter, k8sattributes, resourcedetection, batch│
-│  exports → Gateway                                                    │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │ OTLP (gRPC:4317)
-┌──────────────────────────▼───────────────────────────────────────────┐
-│  OTel Collector — Gateway (Deployment)                                │
-│  processors: memory_limiter, tail_sampling, batch                    │
-│  exports → Elastic APM Server (OTLP HTTP :8200)                      │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │
-┌──────────────────────────▼───────────────────────────────────────────┐
-│  Elastic Stack (elastic namespace, managed by ECK)                    │
-│  ┌─────────────┐  ┌────────┐  ┌────────────┐  ┌─────────────────┐   │
-│  │Elasticsearch│  │ Kibana │  │ APM Server │  │ Fleet Server    │   │
-│  │ (HTTPS/TLS) │  │ (UI)   │  │ (OTLP+RUM) │  │ (agent mgmt)   │   │
-│  └─────────────┘  └────────┘  └────────────┘  └─────────────────┘   │
-└──────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│ BROWSER (User's computer)                                       │
+│                                                                 │
+│  Online Boutique UI ◄──── HTML pages served by frontend         │
+│  Elastic APM RUM Agent ──── sends page load + Web Vitals ──┐   │
+│  (rum-init.html)            via HTTP to APM Server          │   │
+└──────────────────┬──────────────────────────────────────────┼───┘
+                   │ HTTP requests                            │ RUM data
+                   ▼                                          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ AZURE LOAD BALANCER (Public IP: x.x.x.x)                        │
+│ Created automatically by NGINX Ingress Controller                │
+│ Routes: *.nip.io hostnames → correct backend services            │
+│   x.x.x.x.nip.io      → frontend                               │
+│   kibana.x.x.x.x.nip.io → Kibana                               │
+│   apm.x.x.x.x.nip.io    → APM Server (for browser RUM)         │
+└──────────────────┬───────────────────────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ AKS CLUSTER (2 nodes × 4 vCPU × 16GB RAM)                       │
+│                                                                   │
+│ ┌─── Namespace: online-boutique ───────────────────────────────┐ │
+│ │                                                               │ │
+│ │  frontend ◄──► checkoutservice ──► paymentservice (Node.js)  │ │
+│ │  (Go)           (Go)                                          │ │
+│ │    │                │              shippingservice (Go)       │ │
+│ │    │                │              emailservice (Python)      │ │
+│ │    ▼                ▼              currencyservice (Node.js)  │ │
+│ │  cartservice ──► redis-cart       recommendationservice (Py)  │ │
+│ │  (C#/.NET)                        adservice (Java)           │ │
+│ │                                   loadgenerator (Python)     │ │
+│ │  postgresql (added for DB monitoring)                        │ │
+│ │                                                               │ │
+│ │  Each instrumented service has env var:                       │ │
+│ │  OTEL_EXPORTER_OTLP_ENDPOINT → OTel Agent on port 4317      │ │
+│ └───────────────────────────┬───────────────────────────────────┘ │
+│                             │ OTLP gRPC (port 4317)              │
+│                             ▼                                     │
+│ ┌─── Namespace: otel-system ───────────────────────────────────┐ │
+│ │                                                               │ │
+│ │  OTel Agent (DaemonSet — 1 per node)                         │ │
+│ │    Receives: OTLP from app pods + hostmetrics from node      │ │
+│ │    Enriches: adds pod name, namespace, deployment (K8s API)  │ │
+│ │    Forwards: everything to OTel Gateway                      │ │
+│ │                    │                                          │ │
+│ │                    ▼                                          │ │
+│ │  OTel Gateway (Deployment — 1 central instance)              │ │
+│ │    Receives: all data from all Agents                        │ │
+│ │    Samples:  100% errors, 100% slow >1s, 10% healthy         │ │
+│ │    Exports:  OTLP HTTP → APM Server                          │ │
+│ └───────────────────────────┬───────────────────────────────────┘ │
+│                             │ OTLP HTTP (port 8200)              │
+│                             ▼                                     │
+│ ┌─── Namespace: elastic ───────────────────────────────────────┐ │
+│ │                                                               │ │
+│ │  APM Server ──► Elasticsearch ◄── Kibana                     │ │
+│ │  (receives       (stores all       (visualizes                │ │
+│ │   traces +        traces/metrics/   data in                   │ │
+│ │   RUM data)       logs)             dashboards)               │ │
+│ │                                                               │ │
+│ │  Fleet Server (manages Elastic Agent policies)               │ │
+│ └───────────────────────────────────────────────────────────────┘ │
+│                                                                   │
+│ ┌─── Namespace: monitoring ────────────────────────────────────┐ │
+│ │  Filebeat (Calico flow logs → Elasticsearch)                 │ │
+│ │  Filebeat (K8s audit logs → Elasticsearch)                   │ │
+│ └───────────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
-## Prerequisites
+---
 
-| Tool | Version | Install |
-|---|---|---|
-| Azure CLI | 2.x | https://docs.microsoft.com/cli/azure/install-azure-cli |
-| kubectl | 1.32+ | https://kubernetes.io/docs/tasks/tools/ |
-| Helm | 3.14+ | https://helm.sh/docs/intro/install/ |
-| GitHub CLI | 2.x | https://cli.github.com/ |
+## Where Is the Application?
 
-**Azure resources:**
-- AKS cluster: 2x Standard_D4ads_v6 (4 vCPU, 16 GB RAM each)
-- Region: North Europe
-- Network Policy: Calico
-- Kubernetes: v1.32
+The **application** is Google's [Online Boutique](https://github.com/GoogleCloudPlatform/microservices-demo) — a sample e-commerce app with 11 microservices written in Go, C#, Node.js, Python, and Java.
 
-## Quick Start
+**We do NOT clone the application repo.** Instead:
+1. The application's Kubernetes manifests are **vendored** (copied) into [kubernetes/application/online-boutique.yaml](kubernetes/application/online-boutique.yaml)
+2. The **Docker images** are pre-built by Google and pulled directly from Google Artifact Registry at deploy time
+3. We **configure** the application by patching environment variables (in [instrumentation/*/k8s-patch.yaml](instrumentation/)) that tell the OTel SDK where to send telemetry
 
-### Azure AKS Deployment:
+Think of it like this: Google built and packaged the app. We deploy their packages and wire up monitoring.
+
+---
+
+## How to Deploy (GitHub Actions)
+
+### Prerequisites
+1. An Azure subscription
+2. A GitHub repository with this code
+3. An Azure service principal (for GitHub Actions to authenticate):
+
 ```bash
-# 1. Login to Azure
-az login
-
-# 2. Provision AKS cluster
-bash scripts/provision-aks.sh
-
-# 3. Deploy everything
-bash scripts/deploy-all.sh
+# Create service principal and save the JSON output
+az ad sp create-for-rbac \
+  --name "github-sre-assessment" \
+  --role contributor \
+  --scopes /subscriptions/<YOUR-SUBSCRIPTION-ID> \
+  --sdk-auth
 ```
 
-This deploys everything in order (takes ~15-20 minutes):
-1. AKS cluster with 2 nodes and Calico CNI
-2. Elastic Stack (Elasticsearch, Kibana, APM Server, Fleet Server) via ECK
-3. NGINX Ingress Controller
-4. Google Online Boutique + PostgreSQL
-5. OpenTelemetry Collector (Gateway + Agent)
-6. Network Policies
-7. Infrastructure monitoring collectors
-8. Service instrumentation patches
+4. Add the JSON output as a GitHub secret named `AZURE_CREDENTIALS`:
+   - Go to: GitHub repo → Settings → Secrets and variables → Actions
+   - Click "New repository secret"
+   - Name: `AZURE_CREDENTIALS`
+   - Value: paste the entire JSON from step 3
 
-### Step-by-step deployment:
+### Deployment Steps
+
+Run these workflows **in order** from GitHub Actions tab:
+
+| Step | Workflow | What it does | Time |
+|------|----------|-------------|------|
+| 1 | **1 - Deploy Infrastructure** | Creates AKS cluster, namespaces, ECK operator | ~10 min |
+| 2 | **2 - Deploy Observability Stack** | Deploys Elastic Stack, OTel Collectors, NGINX Ingress | ~10 min |
+| 3 | **3 - Deploy Application** | Deploys Online Boutique, monitoring, alerting rules | ~5 min |
+
+### After Deployment
+
 ```bash
-# 1. Create cluster
-bash kubernetes/cluster-setup.sh
+# Get cluster credentials locally
+az aks get-credentials -g sre-assessment-rg -n sre-assessment-aks
 
-# 2. Deploy Elastic Stack
-bash kubernetes/elastic-stack/deploy-elastic-stack.sh
-
-# 3. Deploy NGINX Ingress
-bash kubernetes/nginx-ingress/deploy-nginx-ingress.sh
-
-# 4. Deploy Online Boutique + PostgreSQL
-bash kubernetes/online-boutique/deploy-online-boutique.sh
-
-# 5. Deploy OTel Collectors
-bash otel-collector/deploy-otel-collector.sh
-
-# 6. Apply network policies
-kubectl apply -f infrastructure/network-policies/network-policies.yaml
-
-# 7. Deploy infrastructure monitoring
-kubectl apply -f infrastructure/network-policies/calico-flow-logs.yaml
-kubectl apply -f infrastructure/network-policies/kube-audit-filebeat.yaml
-
-# 8. Apply instrumentation patches
-kubectl patch deployment frontend -n online-boutique --patch-file instrumentation/frontend/k8s-patch.yaml
-kubectl patch deployment cartservice -n online-boutique --patch-file instrumentation/cartservice/k8s-patch.yaml
-kubectl patch deployment paymentservice -n online-boutique --patch-file instrumentation/paymentservice/k8s-patch.yaml
-```
-
-## Accessing Services
-
-All services are exposed via the NGINX Ingress Controller at the cluster's external IP.
-No port-forwarding required.
-
-| Service | URL | Notes |
-|---|---|---|
-| **Online Boutique** | `http://<INGRESS_IP>` | Direct access via public IP |
-| **Kibana** | `http://kibana.<INGRESS_IP>.nip.io` | Login: elastic / `<password>` |
-| **APM Server** | `http://apm.<INGRESS_IP>.nip.io` | For RUM browser agent |
-
-> `nip.io` is a wildcard DNS that resolves `*.IP.nip.io` to that IP. No `/etc/hosts` changes needed.
-
-**Get the Ingress IP:**
-```bash
+# Get the Ingress IP
 kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-```
 
-**Kibana credentials:**
-```bash
-# Username: elastic
-# Password:
+# Get Elasticsearch password
 kubectl get secret elasticsearch-es-elastic-user -n elastic -o jsonpath='{.data.elastic}' | base64 -d
 ```
 
-## Post-Deployment Steps
+Access URLs (replace `<IP>` with your Ingress IP):
+- **Online Boutique**: `http://<IP>.nip.io`
+- **Kibana**: `http://kibana.<IP>.nip.io` (login: elastic / `<password>`)
+- **APM Server**: `http://apm.<IP>.nip.io`
 
-### 1. Generate traffic
-```bash
-bash scripts/generate-traffic.sh 100    # 100 checkout flows
-bash scripts/generate-traffic.sh continuous  # run indefinitely
-```
+### Tear Down
 
-### 2. Configure Fleet Agent integrations
-Open Kibana → Fleet → Agent policies and configure:
-- System integration (see `infrastructure/elastic-agent-policies/system-policy.yaml`)
-- PostgreSQL integration (see `infrastructure/postgres-integration/postgresql-config.yaml`)
-- Redis integration (see `infrastructure/redis-integration/redis-config.yaml`)
-- NGINX integration (see `infrastructure/nginx-integration/nginx-config.yaml`)
+Run the **🗑️ Destroy All Resources** workflow (type "destroy" to confirm).
 
-### 3. Create alerting rules
-```bash
-# Uses Ingress-based Kibana URL
-INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-KIBANA_URL="http://kibana.${INGRESS_IP}.nip.io" bash infrastructure/alerting-rules/create-alerting-rules.sh
-```
-
-### 4. Create dashboards
-Follow the guide in `dashboards/DASHBOARD-GUIDE.md` to create the three required dashboards in Kibana.
-
-### 5. Export dashboards
-```bash
-INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-KIBANA_URL="http://kibana.${INGRESS_IP}.nip.io" bash scripts/export-dashboards.sh
-```
-
-## Verification Checklist
-
-### Section 1: OpenTelemetry Implementation
-- [ ] OTel Agent DaemonSet running on all 2 nodes: `kubectl get pods -n otel-system -o wide`
-- [ ] OTel Gateway running: `kubectl get pods -n otel-system`
-- [ ] Services visible in Kibana → Observability → APM → Services
-- [ ] Traces visible in Kibana → Observability → APM → Traces
-- [ ] Service Map shows connected services: Kibana → APM → Service Map
-- [ ] Custom spans visible on transactions (validate-cart-contents, process-payment-charge, etc.)
-- [ ] Custom metrics queryable in Kibana → Observability → Metrics Explorer
-- [ ] Collector health via zpages (accessible inside cluster or via port-forward if needed)
-
-### Section 2: RUM + Dashboards
-- [ ] RUM data in Kibana → Observability → User Experience
-- [ ] Core Web Vitals visible (LCP, FID, CLS, TTFB)
-- [ ] Browser-to-backend trace correlation in APM → Traces
-- [ ] Dashboard 1: Service Health Overview (exported as NDJSON)
-- [ ] Dashboard 2: RUM Performance (exported as NDJSON)
-- [ ] Dashboard 3: Business Transaction Monitoring (exported as NDJSON)
-
-### Section 3: Infrastructure Monitoring
-- [ ] Host metrics in Kibana → Observability → Infrastructure → Inventory
-- [ ] PostgreSQL dashboard populated (Kibana → Dashboards → search "PostgreSQL")
-- [ ] Redis dashboard populated (Kibana → Dashboards → search "Redis")
-- [ ] Calico flow logs in Discover (index: logs-calico.flowlog-*)
-- [ ] Network denied connections visible
-- [ ] NGINX metrics and access logs flowing
-- [ ] All 11 alerting rules created and active: Kibana → Observability → Rules
-- [ ] NGINX ↔ backend latency correlation dashboard panel
+---
 
 ## Repository Structure
 
 ```
-sre-assessment/
-├── otel-collector/                   # Section 1.1
-│   ├── values-agent.yaml             # DaemonSet agent Helm values
-│   ├── values-gateway.yaml           # Gateway Deployment Helm values
-│   ├── sampling-policy.yaml          # Tail sampling rationale
-│   └── deploy-otel-collector.sh
-├── instrumentation/                  # Section 1.2
-│   ├── frontend/                     # Go — otel_init.go, k8s-patch.yaml
-│   ├── cartservice/                  # C# — OtelConfig.cs, k8s-patch.yaml
-│   └── paymentservice/              # Node.js — tracing.js, custom-spans.js, k8s-patch.yaml
-├── rum/                              # Section 2.1
-│   ├── rum-init.html                 # Elastic RUM agent script block
-│   └── README.md
-├── dashboards/                       # Section 2.2
-│   ├── DASHBOARD-GUIDE.md            # Panel-by-panel creation instructions
-│   ├── service-health.ndjson         # Exported after creation
-│   ├── rum-performance.ndjson
-│   └── business-transactions.ndjson
-├── infrastructure/                   # Section 3
-│   ├── elastic-agent-policies/       # System integration config
-│   ├── postgres-integration/         # PostgreSQL monitoring config
-│   ├── redis-integration/            # Redis monitoring config
-│   ├── nginx-integration/            # NGINX Ingress monitoring config
-│   ├── network-policies/             # NetworkPolicies + Calico flow logs + audit
-│   └── alerting-rules/              # Kibana alerting rule creation script
-├── kubernetes/                       # Cluster + stack deployment
-│   ├── cluster-setup.sh
-│   ├── elastic-stack/               # ECK CRDs + deploy script
-│   ├── nginx-ingress/               # Ingress controller + frontend Ingress
-│   └── online-boutique/             # App manifests + PostgreSQL StatefulSet
-├── scripts/
-│   ├── deploy-all.sh                # One-command full deployment
-│   ├── generate-traffic.sh          # Checkout flow traffic generator
-│   └── export-dashboards.sh         # Kibana NDJSON exporter
-├── docs/
-│   └── DECISIONS.md                 # Architectural decision log (10 decisions)
-└── README.md                        # This file
+.github/workflows/
+  1-deploy-infrastructure.yml  ← Step 1: AKS cluster + ECK operator
+  2-deploy-observability.yml   ← Step 2: Elastic Stack + OTel + NGINX
+  3-deploy-application.yml     ← Step 3: App + monitoring + alerts
+  destroy.yml                  ← Tear down everything
+
+kubernetes/
+  base/
+    namespaces.yaml            ← 4 namespaces for isolation
+  elastic-stack/
+    elasticsearch.yaml         ← Data store (traces, metrics, logs)
+    kibana.yaml                ← Visualization UI
+    apm-server.yaml            ← Receives OTLP + RUM data
+    fleet-server.yaml          ← Manages Elastic Agents
+  otel-collector/
+    agent-values.yaml          ← Per-node DaemonSet (collection + enrichment)
+    gateway-values.yaml        ← Central Deployment (sampling + export)
+  application/
+    online-boutique.yaml       ← 11 microservices (vendored from Google)
+    postgresql.yaml            ← Database for monitoring (Section 3.2)
+  ingress/
+    nginx-values.yaml          ← NGINX Ingress Controller config
+    frontend-ingress.yaml      ← Routes traffic to frontend
+    kibana-ingress.yaml        ← Routes traffic to Kibana + APM Server
+  network-policies/
+    policies.yaml              ← 8 network policies (default-deny + allow-list)
+    calico-flow-logs.yaml      ← Ships Calico flow logs to Elasticsearch
+  monitoring/
+    kube-audit-filebeat.yaml   ← Ships K8s audit logs to Elasticsearch
+    elastic-agent-config.yaml  ← System, PostgreSQL, Redis, NGINX metrics
+  alerting/
+    create-alerting-rules.sh   ← 11 rules created via Kibana API
+
+instrumentation/
+  frontend/k8s-patch.yaml      ← OTel env vars for frontend (Go)
+  cartservice/k8s-patch.yaml   ← OTel env vars for cartservice (C#)
+  paymentservice/k8s-patch.yaml← OTel env vars for paymentservice (Node.js)
+  rum/rum-init.html            ← Browser RUM Agent configuration
+
+dashboards/
+  DASHBOARD-GUIDE.md           ← Panel-by-panel creation instructions
+
+scripts/
+  generate-traffic.sh          ← Simulates shopping sessions for testing
+
+docs/
+  DECISIONS.md                 ← 10 architectural decisions with rationale
 ```
 
-## Known Limitations
+---
 
-1. **Single-node Elasticsearch:** Sufficient for assessment; not HA. Production would use 3+ nodes.
-2. **AKS resource constraints:** 2 nodes with 4 vCPU each. Monitor with `kubectl top nodes`.
-3. **Custom instrumentation requires image rebuild:** The OTel SDK code (otel_init.go, OtelConfig.cs, tracing.js) must be compiled into new Docker images. K8s patches inject env vars but the SDK init code needs to be in the image.
-4. **RUM APM Server:** Exposed via Ingress at `http://apm.<INGRESS_IP>.nip.io` for browser-to-backend tracing.
-5. **Calico flow logs:** Depend on Calico CNI being properly installed. If using a different CNI, flow log collection will need adaptation.
-6. **Dashboard NDJSON files:** Placeholder until dashboards are created in Kibana and exported. Run `scripts/export-dashboards.sh` after building dashboards.
+## Telemetry Collection Explained
+
+### Traces (Distributed Tracing)
+**Flow:** App pod → OTel Agent → OTel Gateway (sampling) → APM Server → Elasticsearch
+
+When a user visits the store:
+1. Browser sends HTTP request to frontend
+2. Frontend creates a trace span, calls cartservice via gRPC
+3. `traceparent` header propagates the trace ID across services
+4. Each service adds its span to the trace
+5. OTel SDK sends spans to OTel Agent (same node, port 4317)
+6. Agent enriches with K8s metadata (pod name, namespace)
+7. Agent forwards to Gateway
+8. Gateway applies tail-based sampling (keep errors/slow/10% healthy)
+9. Gateway exports to APM Server via OTLP HTTP
+10. APM Server indexes into Elasticsearch
+11. Viewable in Kibana APM as a trace waterfall
+
+### Metrics
+**Flow:** OTel Agent (hostmetrics) + Elastic Agent (integrations) → Elasticsearch
+
+- **Host metrics**: CPU, memory, disk, network — collected by OTel Agent's hostmetrics receiver every 30s
+- **PostgreSQL**: Connections, cache hit ratio, slow queries — collected by Elastic Agent PostgreSQL integration
+- **Redis**: Memory, clients, evictions — collected by Elastic Agent Redis integration
+- **NGINX**: Request rates, latency, status codes — collected from Prometheus metrics endpoint
+- **Custom app metrics**: cart_operations_total, payment_attempts_total — sent via OTLP from app SDKs
+
+### Logs
+**Flow:** Filebeat DaemonSet → Elasticsearch
+
+- **Calico flow logs**: Every allowed/denied network connection → shipped by Filebeat
+- **K8s audit logs**: Network policy changes → shipped by Filebeat
+- **Application logs**: Collected by OTel Agent from pod stdout
+
+---
+
+## Alerting Rules (11 Total)
+
+| # | Rule | Threshold | Section |
+|---|------|-----------|---------|
+| 1 | High CPU Usage | > 85% for 5 min | 3.1 Compute |
+| 2 | Disk Space Critical | > 90% used | 3.1 Compute |
+| 3 | Memory Pressure | < 500MB available | 3.1 Compute |
+| 4 | PostgreSQL Connections | > 80% of max (100) | 3.2 Database |
+| 5 | PostgreSQL Cache Hit Ratio | < 95% | 3.2 Database |
+| 6 | Redis Memory | > 85% of max | 3.2 Database |
+| 7 | Redis Eviction Rate | > 100 keys/5min | 3.2 Database |
+| 8 | Unexpected Egress | Any denied connection | 3.3 Network |
+| 9 | 5xx Error Rate | > 5% over 2 min | 3.4 NGINX |
+| 10 | Backend Errors (502/503) | > 3 in 2 min | 3.4 NGINX |
+| 11 | SSL Certificate Expiry | < 14 days | 3.4 NGINX |
+
+---
+
+## Network Connectivity
+
+All traffic enters through a single **Azure Load Balancer** public IP, managed by the NGINX Ingress Controller. Internal communication uses Kubernetes DNS (ClusterIP services). Network policies enforce:
+
+- **Default deny** all ingress to application namespace
+- **Explicit allow** only required service-to-service paths
+- **OTel egress** allowed for all pods to send telemetry
+- **Calico flow logs** capture all allowed/denied connections
+
+No port-forwarding is needed — everything is accessible via the public IP.

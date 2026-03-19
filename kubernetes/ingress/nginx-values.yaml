@@ -1,0 +1,62 @@
+# =============================================================================
+# NGINX INGRESS CONTROLLER — Helm Values
+# =============================================================================
+# PURPOSE:
+#   NGINX Ingress Controller is the ENTRY POINT to the cluster from the
+#   internet. When deployed on AKS, Azure automatically provisions:
+#   - A public Azure Load Balancer
+#   - A public IP address
+#
+#   All external traffic flows through NGINX:
+#     Internet → Azure Load Balancer → NGINX Ingress → Backend Services
+#
+# HOW IT FITS:
+#   - Browsers access the Online Boutique at http://<IP>.nip.io → NGINX → frontend
+#   - Browsers send RUM data to http://apm.<IP>.nip.io → NGINX → APM Server
+#   - Admins access Kibana at http://kibana.<IP>.nip.io → NGINX → Kibana
+#
+# MONITORING (Section 3.4 of the assessment):
+#   - metrics.enabled: true → Exposes Prometheus-format metrics on port 10254
+#     (request rates, latency histograms, status code counts)
+#   - config.log-format-upstream: JSON → Structured access logs that can be
+#     parsed by Elasticsearch (instead of plain-text Apache-style logs)
+#
+# KEY METRICS AVAILABLE:
+#   - nginx_ingress_controller_requests (counter): Total requests by status
+#   - nginx_ingress_controller_request_duration_seconds (histogram): Latency
+#   - nginx_ingress_controller_nginx_process_connections: Active connections
+# =============================================================================
+controller:
+  # Prometheus metrics endpoint for monitoring NGINX itself
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "10254"
+
+  # Structured JSON access logs — much easier to parse than plain text
+  # Each field maps to an NGINX variable:
+  #   $time_iso8601 → timestamp in ISO format
+  #   $status → HTTP response status code
+  #   $request_time → total time to serve the request (seconds)
+  #   $upstream_response_time → time the backend took to respond
+  #   $remote_addr → client IP address
+  config:
+    log-format-upstream: >-
+      {"time":"$time_iso8601","remote_addr":"$remote_addr",
+      "request":"$request","status":$status,
+      "body_bytes_sent":$body_bytes_sent,
+      "request_time":$request_time,
+      "upstream_response_time":"$upstream_response_time",
+      "upstream_addr":"$upstream_addr",
+      "http_user_agent":"$http_user_agent",
+      "http_x_forwarded_for":"$http_x_forwarded_for"}
+
+    # Enable OpenTelemetry support in NGINX
+    enable-opentelemetry: "true"
+
+  # Azure-specific: Creates a Standard SKU Load Balancer
+  service:
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz

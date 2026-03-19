@@ -1,3 +1,33 @@
+# =============================================================================
+# APM SERVER — ECK Custom Resource
+# =============================================================================
+# PURPOSE:
+#   APM Server is the Elastic component that RECEIVES telemetry data and
+#   indexes it into Elasticsearch. It accepts data from two sources:
+#
+#   1. OTLP from OTel Gateway (port 8200):
+#      OTel Gateway sends traces, metrics, and logs via OTLP HTTP protocol.
+#      APM Server translates OTLP format → Elastic APM format → Elasticsearch.
+#
+#   2. RUM from browsers (port 8200):
+#      The Elastic APM RUM Agent in the browser sends page load events,
+#      Core Web Vitals (LCP, FID, CLS), and user interaction spans directly
+#      to APM Server. This is why APM Server must be accessible from the
+#      internet (via the NGINX Ingress at http://apm.<IP>.nip.io).
+#
+# HOW IT FITS:
+#   OTel Gateway → APM Server → Elasticsearch
+#   Browser RUM  → APM Server → Elasticsearch (via Ingress)
+#
+# KEY CONFIGURATION:
+#   - apm-server.rum.enabled: true
+#     → Allows browsers to send RUM data directly
+#   - apm-server.rum.allow_origins: ["*"]
+#     → CORS: allow any origin (for assessment; restrict in production)
+#   - apm-server.auth.secret_token
+#     → Shared secret between OTel Gateway and APM Server
+#     → The OTel Gateway includes this token in its HTTP headers
+# =============================================================================
 apiVersion: apm.k8s.elastic.co/v1
 kind: ApmServer
 metadata:
@@ -11,22 +41,20 @@ spec:
   kibanaRef:
     name: kibana
   config:
-    # OTLP intake — required for OpenTelemetry Collector export
-    apm-server:
-      auth:
-        secret_token: "assessment-secret-token"
-      # RUM support (Section 2)
-      rum:
-        enabled: true
-        allow_origins: ["*"]
-        allow_headers: ["Content-Type", "traceparent", "tracestate"]
-        library_pattern: "node_modules|bower_components|~"
-      # OTLP receiver for OTel Collector
-      # APM Server natively accepts OTLP on :8200
-  http:
-    tls:
-      selfSignedCertificate:
-        disabled: true
+    # Authentication: OTel Gateway must send this token in the Authorization header
+    apm-server.auth.secret_token: "assessment-secret-token"
+
+    # RUM (Real User Monitoring): Allow browsers to send telemetry
+    apm-server.rum.enabled: true
+    apm-server.rum.allow_origins: ["*"]
+    apm-server.rum.allow_headers:
+      - "Content-Type"
+      - "traceparent"
+      - "tracestate"
+
+    # OTLP intake: Natively accept OpenTelemetry protocol (built into APM Server 8.x)
+    # This means we DON'T need a separate OTLP endpoint — APM Server handles it directly
+    apm-server.kibana.enabled: true
   podTemplate:
     spec:
       containers:
@@ -34,6 +62,7 @@ spec:
           resources:
             requests:
               memory: 512Mi
-              cpu: "500m"
+              cpu: 500m
             limits:
-              memory: 1Gi
+              memory: 512Mi
+              cpu: 500m

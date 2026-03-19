@@ -1,3 +1,61 @@
+# =============================================================================
+# FLEET SERVER — ECK Custom Resource + RBAC
+# =============================================================================
+# PURPOSE:
+#   Fleet Server manages Elastic Agents deployed across the cluster. It:
+#   - Distributes agent policies (what to monitor and how)
+#   - Coordinates agent enrollment (new agents register here)
+#   - Pushes configuration updates to running agents
+#
+# HOW IT FITS:
+#   Fleet Server is the MANAGEMENT PLANE for infrastructure monitoring.
+#   Elastic Agents (enrolled via Fleet) collect:
+#   - System metrics (CPU, memory, disk) from each node
+#   - PostgreSQL metrics (connections, cache stats)
+#   - Redis metrics (memory, clients, evictions)
+#   - NGINX metrics (request rates, status codes)
+#
+#   Data flow: Elastic Agent → Fleet Server (for config) → Elasticsearch (for data)
+#
+# RBAC:
+#   Fleet Server needs Kubernetes API access to discover pods, nodes, and
+#   namespaces. The ClusterRole/ClusterRoleBinding below grants read-only
+#   access to the K8s API, which Fleet Server uses to enrich data with
+#   Kubernetes metadata (pod names, labels, etc.)
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleet-server
+  namespace: elastic
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fleet-server
+rules:
+  # Fleet Server needs to read pod, node, and namespace information
+  # to enrich monitoring data with Kubernetes context
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fleet-server
+subjects:
+  - kind: ServiceAccount
+    name: fleet-server
+    namespace: elastic
+roleRef:
+  kind: ClusterRole
+  name: fleet-server
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: agent.k8s.elastic.co/v1alpha1
 kind: Agent
 metadata:
@@ -23,37 +81,7 @@ spec:
             resources:
               requests:
                 memory: 512Mi
-                cpu: "250m"
+                cpu: 250m
               limits:
-                memory: 1Gi
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: fleet-server
-  namespace: elastic
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: fleet-server
-rules:
-  - apiGroups: [""]
-    resources: ["pods", "namespaces", "nodes"]
-    verbs: ["get", "watch", "list"]
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "create", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: fleet-server
-subjects:
-  - kind: ServiceAccount
-    name: fleet-server
-    namespace: elastic
-roleRef:
-  kind: ClusterRole
-  name: fleet-server
-  apiGroup: rbac.authorization.k8s.io
+                memory: 512Mi
+                cpu: 250m

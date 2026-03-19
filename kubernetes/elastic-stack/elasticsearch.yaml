@@ -1,3 +1,33 @@
+# =============================================================================
+# ELASTICSEARCH — ECK Custom Resource
+# =============================================================================
+# PURPOSE:
+#   Elasticsearch is the CENTRAL DATA STORE for all observability data:
+#   - Traces (distributed transaction traces from OTel)
+#   - Metrics (CPU, memory, request rates, custom business metrics)
+#   - Logs (application logs, Calico flow logs, audit logs)
+#
+# HOW IT FITS:
+#   All data flows INTO Elasticsearch:
+#     OTel Agent → OTel Gateway → APM Server → ELASTICSEARCH
+#     Browser RUM → APM Server → ELASTICSEARCH
+#     Elastic Agent → ELASTICSEARCH
+#     Filebeat → ELASTICSEARCH
+#
+#   All data is READ FROM Elasticsearch:
+#     Kibana dashboards ← ELASTICSEARCH
+#     Alerting rules ← ELASTICSEARCH
+#
+# WHY ECK (not a raw StatefulSet):
+#   The ECK operator (installed in Step 1) watches this resource and
+#   automatically creates: StatefulSet, Service, PVC, TLS certs, users.
+#   If we deleted and recreated this resource, ECK would handle the
+#   lifecycle correctly (drain, restart, reindex if needed).
+#
+# SIZING:
+#   Single node is acceptable for assessment scope. In production you'd
+#   want 3+ nodes for high availability.
+# =============================================================================
 apiVersion: elasticsearch.k8s.elastic.co/v1
 kind: Elasticsearch
 metadata:
@@ -9,27 +39,28 @@ spec:
     - name: default
       count: 1
       config:
+        # Single node mode — no cluster coordination overhead
         node.store.allow_mmap: false
+        # Enable security features (authentication, TLS)
         xpack.security.enabled: true
       podTemplate:
         spec:
-          containers:
-            - name: elasticsearch
-              resources:
-                requests:
-                  memory: 2Gi
-                  cpu: "500m"
-                limits:
-                  memory: 2Gi
-              env:
-                - name: ES_JAVA_OPTS
-                  value: "-Xms1g -Xmx1g"
+          # Required: increase virtual memory limits for Elasticsearch
           initContainers:
             - name: sysctl
               securityContext:
                 privileged: true
                 runAsUser: 0
               command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+          containers:
+            - name: elasticsearch
+              resources:
+                requests:
+                  memory: 2Gi
+                  cpu: "1"
+                limits:
+                  memory: 2Gi
+                  cpu: "1"
       volumeClaimTemplates:
         - metadata:
             name: elasticsearch-data
@@ -37,4 +68,5 @@ spec:
             accessModes: ["ReadWriteOnce"]
             resources:
               requests:
+                # 30GB for traces, metrics, logs storage
                 storage: 30Gi

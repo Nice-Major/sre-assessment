@@ -1,0 +1,54 @@
+# =============================================================================
+# GITHUB ACTIONS WORKFLOW: Destroy All Resources
+# =============================================================================
+# PURPOSE:
+#   Tears down EVERYTHING created by the deploy workflows:
+#   - Deletes the AKS cluster and all workloads running on it
+#   - Deletes the Azure Resource Group (which cascades to all resources)
+#
+# WHEN TO USE:
+#   - When you're done with the assessment and want to stop incurring costs
+#   - When you want to start over completely
+#
+# WARNING:
+#   This is IRREVERSIBLE. All data in Elasticsearch will be lost.
+#   All pods, services, and persistent volumes will be deleted.
+# =============================================================================
+
+name: "🗑️ Destroy All Resources"
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'destroy' to confirm deletion"
+        required: true
+        type: string
+
+env:
+  RESOURCE_GROUP: sre-assessment-rg
+
+jobs:
+  destroy:
+    name: "Destroy Azure Resources"
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'destroy'
+    timeout-minutes: 15
+
+    steps:
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Delete Resource Group
+        run: |
+          echo "⚠️  DELETING resource group '${{ env.RESOURCE_GROUP }}' and ALL resources inside it..."
+          echo "This includes the AKS cluster, load balancer, and all stored data."
+          
+          az group delete \
+            --name ${{ env.RESOURCE_GROUP }} \
+            --yes --no-wait
+
+          echo "✅ Resource group deletion initiated (takes 5-10 minutes to complete)"
+          echo "   You can monitor progress in the Azure Portal."

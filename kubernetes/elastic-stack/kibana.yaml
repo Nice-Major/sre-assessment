@@ -1,3 +1,30 @@
+# =============================================================================
+# KIBANA — ECK Custom Resource
+# =============================================================================
+# PURPOSE:
+#   Kibana is the VISUALIZATION UI for all observability data. It provides:
+#   - APM UI: Service maps, distributed trace viewer, transaction details
+#   - Dashboards: Custom panels for RED metrics, RUM, business metrics
+#   - User Experience: Core Web Vitals, page load waterfall, RUM data
+#   - Alerting: Rule management, notification channels
+#   - Fleet: Elastic Agent management and integration configuration
+#
+# HOW IT FITS:
+#   Kibana reads from Elasticsearch and presents the data visually.
+#   It's the main interface for viewing traces, metrics, and logs.
+#   Accessible via: http://kibana.<INGRESS_IP>.nip.io
+#
+# FLEET INTEGRATIONS:
+#   The xpack.fleet.packages section pre-installs monitoring integrations:
+#   - system: Node-level CPU, memory, disk, network metrics
+#   - postgresql: Database connection pool, cache stats, slow queries
+#   - redis: Memory usage, connected clients, eviction rate
+#   - nginx: Request rates, status codes, latency distribution
+#   - kubernetes: Pod metrics, container stats, node health
+#
+#   These integrations define what data Elastic Agent collects and how
+#   it's indexed in Elasticsearch.
+# =============================================================================
 apiVersion: kibana.k8s.elastic.co/v1
 kind: Kibana
 metadata:
@@ -9,9 +36,20 @@ spec:
   elasticsearchRef:
     name: elasticsearch
   config:
-    server.publicBaseUrl: "http://kibana.INGRESS_IP.nip.io"
-    xpack.fleet.agents.elasticsearch.hosts: ["http://elasticsearch-es-http.elastic.svc.cluster.local:9200"]
-    # Enable Fleet for Elastic Agent management
+    # Public URL (templated with actual IP during Ingress creation)
+    server.publicBaseUrl: "http://kibana.INGRESS_IP_PLACEHOLDER.nip.io"
+    # Fleet Server connection for Elastic Agent management
+    xpack.fleet.agents.fleet_server.hosts:
+      - "https://fleet-server-agent-http.elastic.svc.cluster.local:8220"
+    xpack.fleet.outputs:
+      - id: default-output
+        name: default
+        type: elasticsearch
+        hosts:
+          - "https://elasticsearch-es-http.elastic.svc.cluster.local:9200"
+        is_default: true
+        is_default_monitoring: true
+    # Pre-install monitoring integrations so they're ready to use
     xpack.fleet.packages:
       - name: system
         version: latest
@@ -23,6 +61,8 @@ spec:
         version: latest
       - name: kubernetes
         version: latest
+      - name: apm
+        version: latest
   podTemplate:
     spec:
       containers:
@@ -30,6 +70,7 @@ spec:
           resources:
             requests:
               memory: 1Gi
-              cpu: "1"
+              cpu: 500m
             limits:
               memory: 2Gi
+              cpu: "1"

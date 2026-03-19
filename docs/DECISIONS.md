@@ -1,194 +1,183 @@
-# Architectural Decision Log
+# =============================================================================
+# ARCHITECTURAL DECISIONS
+# =============================================================================
+# Documents the WHY behind every major technical choice.
+# Each decision follows the format: Context → Decision → Consequences
+# =============================================================================
 
-This document records the key architectural and implementation decisions made during the SRE practical assessment. Each decision includes context, the choice made, and the rationale.
+## Decision 1: AKS with Calico CNI
 
----
+**Context:** Need a Kubernetes cluster for the assessment that supports network
+policies and network flow logging.
 
-## Decision 1: Kubernetes Cluster — Azure AKS with Calico CNI
+**Decision:** Use Azure Kubernetes Service (AKS) with Azure CNI and Calico
+network policy provider.
 
-**Context:** The assessment requires a multi-node cluster with the ability to run Elastic Stack, 11 microservices, OpenTelemetry collectors, NGINX Ingress, and monitoring agents simultaneously.
-
-**Decision:** Use Azure Kubernetes Service (AKS) with 2 nodes (Standard_D4ads_v6, 4 vCPU / 16 GB each), Calico CNI, and managed identity.
-
-**Rationale:**
-- AKS provides a production-grade managed Kubernetes environment
-- Calico CNI is required for Section 3.3 (Network Policy monitoring with flow logs)
-- Standard_D4ads_v6 provides a good balance of compute and memory for the workload
-- Managed identity simplifies Azure RBAC and avoids credential management
-- 2 nodes with 4 vCPU each provides 8 vCPUs total, sufficient for all workloads
-- Region: North Europe (selected for subscription availability)
-
-**Trade-offs:**
-- Cloud costs (~$0.40/hour) vs. free local minikube
-- 2 nodes (not 3+) due to subscription quota constraints; acceptable for assessment
-- Free tier AKS has no SLA; acceptable for assessment scope
+**Consequences:**
+- ✅ Calico supports network policy flow logs (required for Section 3.3)
+- ✅ AKS is a managed service — Azure handles control plane operations
+- ✅ Azure CNI gives each pod a real IP (simpler networking than kubenet)
+- ⚠️ Calico adds overhead vs simpler CNI plugins
+- ⚠️ 2-node cluster is not HA (acceptable for assessment)
 
 ---
 
-## Decision 2: OTel Collector Topology — Gateway + Agent (DaemonSet)
+## Decision 2: Gateway + Agent OTel Collector Topology
 
-**Context:** Section 1.1 requires both DaemonSet agents and a central gateway, with tail-based sampling at the gateway level.
+**Context:** Need to collect telemetry from all microservices and deliver it
+to Elastic APM Server with intelligent sampling.
 
-**Decision:** Deploy OTel Collector in a 2-tier topology:
-- DaemonSet agents (one per node) receive telemetry from application SDKs, enrich with k8s attributes, and forward to the gateway
-- Gateway Deployment (single replica) applies tail-based sampling on traces and exports all signals to Elastic APM Server via OTLP
+**Decision:** Deploy TWO OTel Collector layers:
+1. Agent (DaemonSet) — one per node, receives from local pods
+2. Gateway (Deployment) — central, performs tail-based sampling
 
-**Rationale:**
-- Agent per node minimizes network hops from application pods to collector
-- Gateway centralizes sampling decisions (tail-based sampling requires seeing all spans of a trace in one place)
-- Separating concerns: agents handle collection + enrichment, gateway handles sampling + export
-- This is the canonical OTel deployment pattern for production environments
-
-**Trade-offs:**
-- Additional hop (agent → gateway) adds minimal latency (~1-2ms)
-- Single gateway replica is a SPOF; in production, scale to 2+ replicas with a headless service
-- Memory usage: gateway needs to buffer traces during the `decision_wait` window (10s)
+**Consequences:**
+- ✅ Low-latency collection (Agent is on the same node as pods)
+- ✅ Node-level metrics (Agent collects hostmetrics from its node)
+- ✅ Kubernetes enrichment (Agent adds pod names, labels via K8s API)
+- ✅ Central sampling (Gateway sees complete traces)
+- ✅ Standard pattern recommended by OpenTelemetry project
+- ⚠️ Two components to manage instead of one
 
 ---
 
-## Decision 3: Tail-Based Sampling Policy
+## Decision 3: Tail-Based Sampling Policy (100% / 100% / 10%)
 
-**Context:** Sampling must balance observability coverage with storage efficiency.
+**Context:** Storing ALL traces would overwhelm Elasticsearch. Need to
+reduce volume while keeping important traces.
 
-**Decision:** Three-tier sampling policy:
-1. Always keep 100% of error traces
-2. Always keep 100% of high-latency traces (>1000ms)
-3. Probabilistic 10% sampling of remaining healthy traces
+**Decision:** Tail-based sampling on the Gateway with three policies:
+1. 100% of error traces (status_code = ERROR)
+2. 100% of slow traces (latency > 1 second)
+3. 10% of healthy traces (probabilistic baseline)
 
-**Rationale:**
-- Errors are rare but critical — never sample them away
-- High-latency traces signal performance issues — always keep
-- 10% of healthy traffic provides sufficient statistical visibility for dashboards and service maps
-- Expected storage reduction: 80-85%
-- The 1000ms latency threshold is set above the p95 for most Online Boutique services under normal load
+**Consequences:**
+- ✅ Never lose an error trace — essential for debugging
+- ✅ Never lose a slow trace — essential for performance analysis
+- ✅ 80-85% storage reduction (keep 15-20% of all traces)
+- ✅ Statistical baseline maintained for normal traffic
+- ⚠️ Tail-based requires Gateway to buffer traces in memory (decision_wait=10s)
+- ⚠️ Gateway is a single point of failure (single replica)
 
-**Trade-offs:**
-- 10% may miss rare but interesting normal-path traces; increase to 50% if storage is abundant
-- `decision_wait: 10s` means traces arrive in Elastic with 10s additional delay
-- For this short-lived assessment, could increase to 100% since storage pressure is low
-
----
-
-## Decision 4: Service Selection for Instrumentation
-
-**Context:** Section 1.2 requires instrumenting 3 services in 3 different languages.
-
-**Decision:** Instrument frontend (Go), cartservice (C# .NET), and paymentservice (Node.js).
-
-**Rationale:**
-- **Three different languages** (Go, C#, JavaScript) — maximizes language diversity points
-- **frontend (Go):** Entry point for all user traffic; tracing here captures the root span. Shows HTTP middleware + gRPC client instrumentation.
-- **cartservice (C#):** Demonstrates .NET auto-instrumentation + Redis client tracing. Cart operations are a natural fit for business metrics (items added/removed).
-- **paymentservice (Node.js):** Payment processing is business-critical. Node.js auto-instrumentation is robust. Custom spans around payment validation and charging are high-value.
-- These three form a natural transaction path: frontend → cart → payment (checkout flow)
-
-**Alternatives considered:**
-- recommendationservice (Python) — good language choice but less business-critical
-- currencyservice (C++) — manual OTel C++ SDK instrumentation is time-intensive; risky under time pressure
-- emailservice (Ruby) — Ruby OTel ecosystem is less mature
+**Why NOT head-based sampling:**
+Head-based sampling decides at trace START whether to keep it. But you don't
+know if a trace will ERROR until it completes. Tail-based waits for COMPLETION.
 
 ---
 
-## Decision 5: RUM Implementation — Elastic APM RUM Agent
+## Decision 4: Three Languages (Go, C#, Node.js)
 
-**Context:** Section 2.1 allows either Elastic APM RUM Agent or OpenTelemetry Web SDK.
+**Context:** Assessment requires instrumenting multiple services in different
+languages to demonstrate OTel cross-language support.
 
-**Decision:** Use the Elastic APM RUM Agent (`@elastic/apm-rum`).
+**Decision:** Instrument:
+1. frontend (Go) — serves web UI, makes gRPC calls
+2. cartservice (C#/.NET) — manages cart, uses Redis
+3. paymentservice (Node.js) — processes payments
 
-**Rationale:**
-- Native integration with Kibana's User Experience dashboard — Core Web Vitals, geographic distribution, and session tracking work out of the box
-- Browser-to-backend trace correlation is automatic when using the Elastic RUM agent with Elastic APM Server
-- The Elastic RUM agent auto-captures page load, fetch/XHR, and user interactions
-- OTel Web SDK would require more manual configuration for Kibana compatibility
-
-**Trade-offs:**
-- Vendor lock-in to Elastic RUM agent (not portable to non-Elastic backends)
-- For an Elastic-stack assessment, this is the optimal choice
-
----
-
-## Decision 6: Infrastructure Monitoring — Fleet-managed Elastic Agent
-
-**Context:** Section 3 requires monitoring VMs, databases, network, and load balancers. Options: Fleet-managed Elastic Agent, standalone Beats, or OTel Collector hostmetrics.
-
-**Decision:** Primary approach is Fleet-managed Elastic Agent with integrations (System, PostgreSQL, Redis, NGINX). OTel Collector hostmetrics as a supplementary source for node-level metrics (already configured in the DaemonSet agent).
-
-**Rationale:**
-- Fleet-managed approach centralizes agent policy management in Kibana
-- Integration packages (PostgreSQL, Redis, NGINX) include pre-built dashboards, index templates, and field mappings
-- System integration is the most feature-rich for host-level metrics in the Elastic ecosystem
-- OTel hostmetrics on the DaemonSet provides defense-in-depth (two independent sources of node metrics)
-
-**Trade-offs:**
-- Fleet Server is another component to deploy and manage
-- Elastic Agent's memory footprint is higher than standalone Filebeat/Metricbeat
-- For this assessment, the richer Fleet UI and pre-built dashboards justify the overhead
+**Consequences:**
+- ✅ Covers 3 language ecosystems
+- ✅ Natural checkout flow: frontend → cart → checkout → payment
+- ✅ Each has a different OTel SDK (Go, .NET, Node.js)
+- ✅ Demonstrates environment-variable-based configuration
 
 ---
 
-## Decision 7: Calico for Network Policy Monitoring
+## Decision 5: Elastic APM RUM Agent for Browser Monitoring
 
-**Context:** Section 3.3 requires network policy flow logs and denied connection monitoring.
+**Context:** Need Real User Monitoring to capture browser-side performance.
 
-**Decision:** Use Calico CNI (installed at cluster creation time) with flow log export to Elasticsearch via Filebeat.
+**Decision:** Use Elastic APM RUM Agent (JavaScript library loaded in browser).
 
-**Rationale:**
-- Calico is the most widely used CNI with network policy enforcement and flow logging
-- Flow logs capture allowed/denied connections with source/destination pod metadata
-- Filebeat DaemonSet ships flow logs to Elasticsearch in near-real-time
-- Calico OSS supports basic flow logging; Calico Enterprise adds more granularity
-
-**Trade-offs:**
-- Calico OSS flow logging is less granular than Calico Enterprise or Cilium Hubble
-- Flow log volume can be high in a busy cluster; batch/aggregate settings help
+**Consequences:**
+- ✅ Native Kibana integration — User Experience dashboard auto-populates
+- ✅ Automatic Core Web Vitals capture (LCP, FID, CLS, TTFB)
+- ✅ Distributed tracing: browser spans connect to backend traces
+- ✅ No additional server infrastructure needed
+- ⚠️ Requires APM Server to be browser-accessible (via Ingress)
+- ⚠️ Requires modifying frontend HTML (adding script tag)
 
 ---
 
-## Decision 8: Alerting Rule Thresholds
+## Decision 6: Fleet-Managed Elastic Agent
 
-**Context:** Each infrastructure component requires meaningful alerting rules with thresholds that avoid noise but catch real issues.
+**Context:** Need to collect infrastructure metrics from PostgreSQL, Redis,
+NGINX, and system-level resources.
 
-**Decisions and rationale:**
+**Decision:** Use Elastic Agent managed by Fleet Server for all infrastructure
+monitoring integrations.
 
-| Rule | Threshold | Rationale |
-|---|---|---|
-| CPU sustained | >85% for 5 min | Brief spikes are normal; sustained high CPU signals saturation |
-| Disk critical | >90% used | Industry standard; <10% free is danger zone |
-| Memory pressure | <500MB available | Enough headroom to prevent OOM kills |
-| PG connections | >80% of max (80/100) | Leave 20% buffer for admin connections and spikes |
-| PG cache hit ratio | <95% | Below 95% indicates excessive disk reads; tune shared_buffers |
-| Redis memory | >85% of maxmemory | Eviction starts when maxmemory is hit; alert early |
-| Redis eviction rate | >100 keys/5min | Eviction indicates memory pressure or poor key TTL |
-| NGINX 5xx rate | >5% over 2min | Some 5xx is normal; sustained >5% is an incident |
-| NGINX 502/503 | >3 in 2min | Backend failure pattern |
-| SSL cert expiry | <14 days | Two-week warning allows time for renewal |
-| External egress | Any denied | Zero-trust: all external egress should be explicitly allowed |
+**Consequences:**
+- ✅ Centralized configuration management (Fleet Server)
+- ✅ Pre-built dashboards for each integration
+- ✅ Unified agent (one binary collects all metric types)
+- ⚠️ Fleet Server adds another component to manage
+- ⚠️ More complex than standalone Metricbeat
 
 ---
 
-## Decision 9: PostgreSQL Deployment
+## Decision 7: GitHub Actions for CI/CD
 
-**Context:** The Online Boutique application doesn't include a PostgreSQL database, but Section 3.2 requires PostgreSQL monitoring.
+**Context:** Previous implementation used manual shell scripts run locally.
+This was fragile and hard to reproduce.
 
-**Decision:** Deploy a standalone PostgreSQL 16 StatefulSet in the online-boutique namespace with pg_stat_statements enabled and slow query logging configured.
+**Decision:** Use GitHub Actions workflows for all deployments:
+1. Infrastructure (AKS creation)
+2. Observability (Elastic Stack + OTel)
+3. Application (Online Boutique + monitoring)
 
-**Rationale:**
-- Demonstrates ability to add infrastructure components not present in the base application
-- StatefulSet with PVC ensures data persistence across pod restarts
-- pg_stat_statements extension provides the query statistics needed for slow query identification
-- `log_min_duration_statement=200ms` captures queries that may impact user experience
-- max_connections=100 allows meaningful connection pool monitoring
+**Consequences:**
+- ✅ Reproducible — anyone can re-run the same deployment
+- ✅ Auditable — every deployment is a workflow run with logs
+- ✅ No local tool dependencies beyond git
+- ✅ Manual trigger (workflow_dispatch) — you control when things happen
+- ⚠️ Requires AZURE_CREDENTIALS secret in GitHub repo settings
+- ⚠️ Longer feedback loop than local scripts (runs in cloud)
 
 ---
 
-## Decision 10: Elastic Stack Version — 8.13.4
+## Decision 8: Vendored Application Manifests
 
-**Context:** Need a stable Elastic Stack version that supports OTLP intake, RUM, Fleet, and ML features.
+**Context:** Online Boutique manifests are hosted on Google's GitHub repo.
+Previous implementation applied them directly from URL.
 
-**Decision:** Use Elastic Stack 8.13.4 consistently across all components (Elasticsearch, Kibana, APM Server, Fleet, Beats).
+**Decision:** Copy (vendor) the manifests into our repository.
 
-**Rationale:**
-- 8.13.x is a recent stable release with mature OTLP support in APM Server
-- Consistent versioning prevents compatibility issues between stack components
-- 8.13 supports Fleet-managed Elastic Agents with all required integrations
-- APM Server 8.x natively accepts OTLP data without needing an intermediate exporter
+**Consequences:**
+- ✅ Deployment doesn't depend on Google's servers
+- ✅ We can review and audit exactly what's deployed
+- ✅ Git history shows changes to the application config
+- ✅ Can customize manifests (namespaces, resource limits)
+- ⚠️ Must manually update when upstream changes
+
+---
+
+## Decision 9: PostgreSQL StatefulSet (Not Part of Online Boutique)
+
+**Context:** Assessment Section 3.2 requires database monitoring. Online
+Boutique doesn't include a SQL database.
+
+**Decision:** Deploy PostgreSQL as a StatefulSet with monitoring-friendly
+configuration (pg_stat_statements, slow query logging).
+
+**Consequences:**
+- ✅ Satisfies database monitoring requirement
+- ✅ pg_stat_statements enables query performance tracking
+- ✅ log_min_duration_statement=200ms captures slow queries
+- ✅ max_connections=100 gives meaningful alert threshold (80%)
+- ⚠️ Not connected to the application (standalone for monitoring)
+
+---
+
+## Decision 10: Elastic Stack Version 8.13.4 Across All Components
+
+**Context:** ECK manages Elasticsearch, Kibana, APM Server, and Fleet Server.
+Version mismatches between components cause compatibility issues.
+
+**Decision:** Pin ALL Elastic components to version 8.13.4.
+
+**Consequences:**
+- ✅ Known stable OTLP support in APM Server 8.13.4
+- ✅ No version compatibility issues between components
+- ✅ Filebeat 8.13.4 matches Elasticsearch 8.13.4
+- ⚠️ Not the latest version (8.15+ exists) — acceptable for assessment

@@ -1,0 +1,76 @@
+# =============================================================================
+# INGRESS: Kibana + APM Server
+# =============================================================================
+# PURPOSE:
+#   Makes Kibana and APM Server accessible from the internet via NGINX Ingress.
+#
+#   Kibana (http://kibana.<IP>.nip.io):
+#     The observability dashboard UI. This is where you view traces, metrics,
+#     and logs. Login with username "elastic" and the auto-generated password.
+#
+#   APM Server (http://apm.<IP>.nip.io):
+#     The RUM endpoint. Browsers send page load data and user interaction
+#     traces here. The Elastic APM RUM Agent (JavaScript in the browser)
+#     needs this URL to be publicly accessible.
+#
+# SECURITY NOTE:
+#   - Kibana has built-in authentication (elastic user + password)
+#   - APM Server uses a secret token for OTel data + allows anonymous RUM
+#   - In production, you'd add TLS certificates and restrict access
+#
+# NOTE: INGRESS_IP_PLACEHOLDER is replaced at deploy time by the workflow.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kibana-ingress
+  namespace: elastic
+  annotations:
+    # NGINX talks HTTPS to Kibana backend (ECK enables TLS by default)
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # Don't redirect HTTP to HTTPS (we're not terminating TLS at Ingress)
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "kibana.INGRESS_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kibana-kb-http
+                port:
+                  number: 5601
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: apm-ingress
+  namespace: elastic
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # CORS headers for browser RUM agent
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Content-Type, traceparent, tracestate"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "apm.INGRESS_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: apm-server-apm-http
+                port:
+                  number: 8200

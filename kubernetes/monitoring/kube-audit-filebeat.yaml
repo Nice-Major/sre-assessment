@@ -1,0 +1,100 @@
+# =============================================================================
+# KUBERNETES AUDIT LOG COLLECTOR — Filebeat DaemonSet
+# =============================================================================
+# PURPOSE:
+#   Collects Kubernetes API audit logs and ships them to Elasticsearch.
+#   Specifically filters for NetworkPolicy-related changes so we can:
+#   - Track when network policies are created, modified, or deleted
+#   - Detect unauthorized changes to security policies
+#   - Maintain an audit trail for compliance
+#
+# HOW IT FITS:
+#   K8s API Server → writes audit logs → Filebeat reads → Elasticsearch
+#   This complements the Calico flow logs: flow logs show network TRAFFIC,
+#   audit logs show POLICY CHANGES.
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-audit-filebeat-config
+  namespace: monitoring
+data:
+  filebeat.yml: |
+    filebeat.inputs:
+      - type: filestream
+        id: kube-audit
+        paths:
+          - /var/log/kubernetes/audit/*.log
+        parsers:
+          - ndjson:
+              keys_under_root: true
+              overwrite_keys: true
+
+    # Only keep NetworkPolicy-related audit events
+    processors:
+      - drop_event:
+          when:
+            not:
+              or:
+                - contains:
+                    objectRef.resource: "networkpolicies"
+                - contains:
+                    objectRef.resource: "globalnetworkpolicies"
+
+    output.elasticsearch:
+      hosts:
+        - "https://elasticsearch-es-http.elastic.svc.cluster.local:9200"
+      username: "elastic"
+      password: "${ELASTIC_PASSWORD}"
+      ssl.verification_mode: none
+      index: "logs-kube.audit-assessment"
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-audit-filebeat
+  namespace: monitoring
+  labels:
+    app: kube-audit-filebeat
+spec:
+  selector:
+    matchLabels:
+      app: kube-audit-filebeat
+  template:
+    metadata:
+      labels:
+        app: kube-audit-filebeat
+    spec:
+      containers:
+        - name: filebeat
+          image: docker.elastic.co/beats/filebeat:8.13.4
+          args: ["-c", "/etc/filebeat/filebeat.yml", "-e"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/filebeat/filebeat.yml
+              subPath: filebeat.yml
+              readOnly: true
+            - name: audit-logs
+              mountPath: /var/log/kubernetes/audit
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/filebeat/data
+      volumes:
+        - name: config
+          configMap:
+            name: kube-audit-filebeat-config
+        - name: audit-logs
+          hostPath:
+            path: /var/log/kubernetes/audit
+            type: DirectoryOrCreate
+        - name: data
+          emptyDir: {}

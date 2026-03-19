@@ -1,0 +1,181 @@
+# =============================================================================
+# OPENTELEMETRY COLLECTOR — GATEWAY (Deployment) Helm Values
+# =============================================================================
+# PURPOSE:
+#   The OTel Gateway is a SINGLE CENTRAL collector that receives ALL telemetry
+#   from ALL OTel Agents across ALL nodes. It performs two critical functions:
+#
+#   1. TAIL-BASED SAMPLING: The most important feature. Instead of deciding
+#      whether to keep a trace at the START (head-based), it waits until the
+#      COMPLETE trace has arrived and then decides. This means:
+#      - If ANY span in a trace has an error → keep the entire trace (100%)
+#      - If the trace is slow (>1 second) → keep the entire trace (100%)
+#      - Otherwise → keep 10% randomly (statistical baseline)
+#
+#      WHY this matters: Head-based sampling might randomly drop a trace that
+#      LATER turns out to have an error in one of its child spans. Tail-based
+#      sampling sees the complete picture before deciding.
+#
+#   2. CENTRAL EXPORT: All data goes to ONE exporter → Elastic APM Server.
+#      This simplifies configuration (only one component needs APM Server creds)
+#      and gives a single point to control data flow.
+#
+# DATA FLOW:
+#   OTel Agent (Node 1) ─┐
+#                         ├──→ OTel Gateway ──→ APM Server ──→ Elasticsearch
+#   OTel Agent (Node 2) ─┘
+#       (tail sampling)
+#
+# SAMPLING POLICY EXPLAINED:
+#   The policies are evaluated in order (first match wins):
+#
+#   Policy 1: "always-sample-errors"
+#     → If status_code is ERROR → keep 100% of the trace
+#     → Errors are rare but critical — never lose them
+#
+#   Policy 2: "sample-high-latency"
+#     → If trace duration > 1000ms → keep 100%
+#     → Slow requests indicate performance problems
+#
+#   Policy 3: "probabilistic-baseline"
+#     → For everything else → keep 10% randomly
+#     → Provides statistical visibility without overwhelming storage
+#
+#   RESULT: ~15-20% of traces are stored (80-85% storage reduction)
+#   while keeping ALL important traces (errors + slow).
+# =============================================================================
+
+mode: deployment
+replicaCount: 1
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.97.0"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    servicePort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP
+
+config:
+  # ---------------------------------------------------------------------------
+  # RECEIVERS: Accept data from OTel Agents
+  # ---------------------------------------------------------------------------
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+  # ---------------------------------------------------------------------------
+  # PROCESSORS: Central sampling and batching
+  # ---------------------------------------------------------------------------
+  processors:
+    # Higher memory limit than Agent because Gateway buffers complete traces
+    memory_limiter:
+      check_interval: 5s
+      limit_mib: 800
+      spike_limit_mib: 200
+
+    # Larger batch size for efficiency (fewer but larger exports)
+    batch:
+      timeout: 10s
+      send_batch_size: 2048
+
+    # TAIL-BASED SAMPLING — the core intelligence of the Gateway
+    tail_sampling:
+      # How long to wait for all spans of a trace to arrive
+      # Traces can span multiple services, so we wait 10s for stragglers
+      decision_wait: 10s
+      # Maximum traces to hold in memory while waiting for decision
+      num_traces: 100000
+      # Expected throughput (helps pre-allocate memory)
+      expected_new_traces_per_sec: 200
+      policies:
+        # Policy 1: ALWAYS keep error traces (100%)
+        - name: always-sample-errors
+          type: status_code
+          status_code:
+            status_codes:
+              - ERROR
+        # Policy 2: ALWAYS keep slow traces — latency > 1 second (100%)
+        - name: sample-high-latency
+          type: latency
+          latency:
+            threshold_ms: 1000
+        # Policy 3: Keep 10% of normal/healthy traces (statistical baseline)
+        - name: probabilistic-baseline
+          type: probabilistic
+          probabilistic:
+            sampling_percentage: 10
+
+  # ---------------------------------------------------------------------------
+  # EXPORTERS: Send data to Elastic APM Server
+  # ---------------------------------------------------------------------------
+  exporters:
+    # OTLP HTTP to APM Server
+    # WHY HTTP not gRPC? Elastic APM Server 8.x accepts OTLP over its HTTP
+    # intake endpoint (:8200). This is the officially supported path.
+    otlphttp:
+      endpoint: "http://apm-server-apm-http.elastic.svc.cluster.local:8200"
+      headers:
+        # Authentication token — must match apm-server.auth.secret_token
+        Authorization: "Bearer assessment-secret-token"
+      retry_on_failure:
+        enabled: true
+        initial_interval: 5s
+        max_interval: 30s
+        max_elapsed_time: 300s
+
+    debug:
+      verbosity: basic
+
+  # ---------------------------------------------------------------------------
+  # EXTENSIONS
+  # ---------------------------------------------------------------------------
+  extensions:
+    health_check:
+      endpoint: "0.0.0.0:13133"
+    zpages:
+      endpoint: "0.0.0.0:55679"
+
+  # ---------------------------------------------------------------------------
+  # SERVICE: Define the processing pipelines
+  # ---------------------------------------------------------------------------
+  service:
+    extensions: [health_check, zpages]
+    pipelines:
+      # Traces go through tail_sampling BEFORE batch and export
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, tail_sampling, batch]
+        exporters: [otlphttp, debug]
+
+      # Metrics pass straight through (no sampling needed for metrics)
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlphttp]
+
+      # Logs pass straight through
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlphttp]

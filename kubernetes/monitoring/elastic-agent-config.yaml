@@ -1,0 +1,176 @@
+# =============================================================================
+# ELASTIC AGENT MONITORING CONFIGURATION
+# =============================================================================
+# PURPOSE:
+#   This ConfigMap defines what infrastructure metrics the Elastic Agent
+#   should collect. It configures integrations for:
+#
+#   1. SYSTEM METRICS (Section 3.1 — Compute Monitoring)
+#      - CPU utilization per core
+#      - Memory usage (used/available/cached)
+#      - Disk I/O (IOPS, throughput, latency)
+#      - Network traffic (bytes/packets/errors per interface)
+#      - Filesystem usage (% used, inode count)
+#      - Load averages (1/5/15 minute)
+#
+#   2. POSTGRESQL METRICS (Section 3.2 — Database Monitoring)
+#      - Active connections vs max_connections (alert at 80%)
+#      - Cache hit ratio (alert when < 95%)
+#      - Transaction rates (commits/rollbacks)
+#      - pg_stat_statements (slow query tracking)
+#      - Lock contention
+#
+#   3. REDIS METRICS (Section 3.2 — Database Monitoring)
+#      - Memory usage vs maxmemory (alert at 85%)
+#      - Connected clients count
+#      - Evicted keys rate (alert at > 100 keys/5min)
+#      - Keyspace hit/miss ratio
+#      - Command latency
+#
+#   4. NGINX METRICS (Section 3.4 — Load Balancer Monitoring)
+#      - Request rate per host/path
+#      - Response status distribution (2xx/3xx/4xx/5xx)
+#      - Latency percentiles (p50/p90/p99)
+#      - Active connections
+#
+# HOW IT FITS:
+#   Elastic Agent (managed by Fleet Server) reads this configuration,
+#   connects to each service, scrapes metrics at defined intervals,
+#   and sends everything to Elasticsearch.
+#
+#   The Kibana alerting rules (create-alerting-rules.sh) query these
+#   metrics to fire alerts when thresholds are breached.
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elastic-agent-monitoring-config
+  namespace: monitoring
+data:
+  # System metrics integration — CPU, memory, disk, network per node
+  system-policy.yaml: |
+    name: system-monitoring
+    namespace: default
+    monitoring_enabled:
+      - logs
+      - metrics
+    inputs:
+      # Node-level metrics collection
+      - type: system/metrics
+        data_stream.namespace: assessment
+        streams:
+          - data_stream:
+              dataset: system.cpu
+            metricsets: ["cpu"]
+            period: 10s
+            cpu.metrics: ["percentages", "normalized_percentages"]
+          - data_stream:
+              dataset: system.memory
+            metricsets: ["memory"]
+            period: 10s
+          - data_stream:
+              dataset: system.diskio
+            metricsets: ["diskio"]
+            period: 30s
+          - data_stream:
+              dataset: system.filesystem
+            metricsets: ["filesystem"]
+            period: 60s
+          - data_stream:
+              dataset: system.network
+            metricsets: ["network"]
+            period: 10s
+          - data_stream:
+              dataset: system.load
+            metricsets: ["load"]
+            period: 10s
+          - data_stream:
+              dataset: system.process
+            metricsets: ["process"]
+            period: 30s
+            process.include_top_n.by_cpu: 10
+            process.include_top_n.by_memory: 10
+      # System log collection
+      - type: logfile
+        data_stream.namespace: assessment
+        streams:
+          - data_stream:
+              dataset: system.syslog
+            paths:
+              - /var/log/syslog
+              - /var/log/messages
+          - data_stream:
+              dataset: system.auth
+            paths:
+              - /var/log/auth.log
+              - /var/log/secure
+
+  # PostgreSQL monitoring integration
+  postgresql-config.yaml: |
+    name: postgresql-monitoring
+    namespace: default
+    inputs:
+      - type: postgresql/metrics
+        data_stream.namespace: assessment
+        streams:
+          - data_stream:
+              dataset: postgresql.activity
+            metricsets: ["activity"]
+            period: 10s
+            hosts:
+              - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+          - data_stream:
+              dataset: postgresql.database
+            metricsets: ["database"]
+            period: 10s
+            hosts:
+              - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+          - data_stream:
+              dataset: postgresql.statement
+            metricsets: ["statement"]
+            period: 60s
+            hosts:
+              - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+          - data_stream:
+              dataset: postgresql.bgwriter
+            metricsets: ["bgwriter"]
+            period: 60s
+            hosts:
+              - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+
+  # Redis monitoring integration
+  redis-config.yaml: |
+    name: redis-monitoring
+    namespace: default
+    inputs:
+      - type: redis/metrics
+        data_stream.namespace: assessment
+        streams:
+          - data_stream:
+              dataset: redis.info
+            metricsets: ["info"]
+            period: 10s
+            hosts:
+              - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
+          - data_stream:
+              dataset: redis.keyspace
+            metricsets: ["keyspace"]
+            period: 60s
+            hosts:
+              - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
+
+  # NGINX Ingress monitoring integration
+  nginx-config.yaml: |
+    name: nginx-monitoring
+    namespace: default
+    inputs:
+      - type: nginx/metrics
+        data_stream.namespace: assessment
+        streams:
+          - data_stream:
+              dataset: nginx.stubstatus
+            metricsets: ["stubstatus"]
+            period: 10s
+            hosts:
+              - "http://ingress-nginx-controller-metrics.ingress-nginx.svc.cluster.local:10254/nginx_status"

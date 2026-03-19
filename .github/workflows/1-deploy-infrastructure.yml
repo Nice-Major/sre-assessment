@@ -1,0 +1,254 @@
+# =============================================================================
+# GITHUB ACTIONS WORKFLOW: Deploy Infrastructure (Step 1 of 3)
+# =============================================================================
+# PURPOSE:
+#   This is the FIRST workflow in the deployment pipeline. It creates the
+#   foundational Azure infrastructure that everything else runs on:
+#   - An Azure Resource Group (logical container for all resources)
+#   - An AKS (Azure Kubernetes Service) cluster with 2 nodes
+#   - Kubernetes namespaces to organize workloads
+#   - Helm repositories for installing software packages
+#   - The ECK (Elastic Cloud on Kubernetes) operator
+#
+# HOW IT FITS:
+#   1. THIS WORKFLOW → Creates AKS cluster + installs operators
+#   2. deploy-observability.yml → Deploys Elastic Stack + OTel on the cluster
+#   3. deploy-application.yml → Deploys the Online Boutique app + monitoring
+#
+# TRIGGER:
+#   - Manual dispatch (workflow_dispatch) so you control when infra is created
+#   - Also triggered by push to main when files in kubernetes/base/ change
+#
+# PREREQUISITES:
+#   You must configure these GitHub repository secrets:
+#   - AZURE_CREDENTIALS: Service principal JSON for Azure login
+#     (created via: az ad sp create-for-rbac --name "github-sre" --role contributor
+#      --scopes /subscriptions/<sub-id> --sdk-auth)
+# =============================================================================
+
+name: "1 - Deploy Infrastructure"
+
+on:
+  workflow_dispatch:
+    inputs:
+      location:
+        description: "Azure region for resources"
+        required: true
+        default: "northeurope"
+        type: choice
+        options:
+          - northeurope
+          - westeurope
+          - eastus
+          - eastus2
+      node_count:
+        description: "Number of AKS worker nodes"
+        required: true
+        default: "2"
+        type: string
+      node_size:
+        description: "VM size for each node"
+        required: true
+        default: "Standard_D4ads_v6"
+        type: string
+
+# Only allow one infrastructure deployment at a time
+concurrency:
+  group: infrastructure-deploy
+  cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: sre-assessment-rg
+  CLUSTER_NAME: sre-assessment-aks
+  LOCATION: ${{ github.event.inputs.location || 'northeurope' }}
+  NODE_COUNT: ${{ github.event.inputs.node_count || '2' }}
+  NODE_SIZE: ${{ github.event.inputs.node_size || 'Standard_D4ads_v6' }}
+
+jobs:
+  deploy-aks:
+    name: "Provision AKS Cluster"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Check out this repository so we have access to our YAML files
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Step 2: Authenticate to Azure using the service principal secret
+      # This is how GitHub Actions gets permission to create Azure resources
+      # -----------------------------------------------------------------------
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # -----------------------------------------------------------------------
+      # Step 3: Create the Resource Group
+      # A Resource Group is like a folder — it holds all related Azure resources
+      # together so they can be managed (and deleted) as a unit.
+      # -----------------------------------------------------------------------
+      - name: Create Resource Group
+        run: |
+          echo "Creating resource group '${{ env.RESOURCE_GROUP }}' in '${{ env.LOCATION }}'..."
+          az group create \
+            --name ${{ env.RESOURCE_GROUP }} \
+            --location ${{ env.LOCATION }} \
+            --tags project=sre-assessment environment=assessment
+
+      # -----------------------------------------------------------------------
+      # Step 4: Create the AKS Cluster
+      # This is the Kubernetes cluster where EVERYTHING runs:
+      #   - The Online Boutique application (11 microservices)
+      #   - The Elastic Stack (Elasticsearch, Kibana, APM Server)
+      #   - The OTel Collectors (Agent + Gateway)
+      #   - NGINX Ingress Controller
+      #
+      # Key configuration choices:
+      #   --network-plugin azure --network-policy calico
+      #     → Uses Azure CNI for networking + Calico for network policies
+      #     → Calico gives us network flow logs (required for Section 3.3)
+      #
+      #   --node-count 2 --node-vm-size Standard_D4ads_v6
+      #     → 2 nodes × 4 vCPU × 16GB RAM = 8 vCPU + 32GB total
+      #     → Enough for Elastic Stack + app + monitoring
+      #
+      #   --enable-managed-identity
+      #     → AKS authenticates to Azure without passwords
+      #
+      #   --kubernetes-version 1.32
+      #     → Latest stable K8s version
+      #
+      #   --tier free
+      #     → Free tier is sufficient for assessment (no SLA needed)
+      # -----------------------------------------------------------------------
+      - name: Create AKS Cluster
+        run: |
+          echo "Creating AKS cluster '${{ env.CLUSTER_NAME }}'..."
+          echo "  Nodes: ${{ env.NODE_COUNT }} × ${{ env.NODE_SIZE }}"
+          echo "  Network: Azure CNI + Calico (for network policy flow logs)"
+          echo "  This takes 5-10 minutes..."
+
+          az aks create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.CLUSTER_NAME }} \
+            --node-count ${{ env.NODE_COUNT }} \
+            --node-vm-size ${{ env.NODE_SIZE }} \
+            --network-plugin azure \
+            --network-policy calico \
+            --kubernetes-version 1.32 \
+            --enable-managed-identity \
+            --generate-ssh-keys \
+            --tier free \
+            --location ${{ env.LOCATION }} \
+            --tags project=sre-assessment \
+            --no-wait false
+
+          echo "✅ AKS cluster created successfully"
+
+      # -----------------------------------------------------------------------
+      # Step 5: Get credentials so kubectl can talk to the cluster
+      # This configures the kubeconfig in the GitHub Actions runner
+      # -----------------------------------------------------------------------
+      - name: Get AKS Credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.CLUSTER_NAME }} \
+            --overwrite-existing
+          
+          echo "Cluster info:"
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+      # -----------------------------------------------------------------------
+      # Step 6: Create Kubernetes Namespaces
+      # Namespaces are like folders inside the cluster — they isolate workloads:
+      #   - elastic:          Elasticsearch, Kibana, APM Server, Fleet Server
+      #   - otel-system:      OTel Collector Agent (DaemonSet) + Gateway
+      #   - online-boutique:  The 11 microservices + PostgreSQL + Redis
+      #   - ingress-nginx:    NGINX Ingress Controller (load balancer)
+      #   - monitoring:       Filebeat for Calico flow logs + audit logs
+      # -----------------------------------------------------------------------
+      - name: Create Namespaces
+        run: |
+          echo "Creating Kubernetes namespaces..."
+          kubectl apply -f kubernetes/base/namespaces.yaml
+          echo "✅ Namespaces created:"
+          kubectl get namespaces --no-headers | grep -E "elastic|otel|online|ingress|monitoring"
+
+      # -----------------------------------------------------------------------
+      # Step 7: Add Helm Repositories
+      # Helm is a package manager for Kubernetes (like apt/brew but for K8s).
+      # We add repos for software we'll install in the next workflows:
+      #   - elastic: ECK operator (manages Elasticsearch/Kibana lifecycle)
+      #   - open-telemetry: OTel Collector Helm chart
+      #   - ingress-nginx: NGINX Ingress Controller
+      # -----------------------------------------------------------------------
+      - name: Add Helm Repositories
+        run: |
+          echo "Adding Helm repositories..."
+          helm repo add elastic https://helm.elastic.co
+          helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+          echo "✅ Helm repositories configured"
+
+      # -----------------------------------------------------------------------
+      # Step 8: Install the ECK Operator
+      # ECK (Elastic Cloud on Kubernetes) is an operator that manages the
+      # lifecycle of Elasticsearch, Kibana, APM Server, and Fleet Server.
+      # Instead of writing complex StatefulSets ourselves, we just declare
+      # "I want an Elasticsearch cluster" and ECK handles:
+      #   - Pod scheduling, TLS certificates, rolling upgrades
+      #   - Persistent volume management, health checks
+      #   - User/password creation
+      #
+      # We install the operator HERE (in infra) because it needs to be
+      # running BEFORE we can create Elasticsearch resources in step 2.
+      # -----------------------------------------------------------------------
+      - name: Install ECK Operator
+        run: |
+          echo "Installing ECK (Elastic Cloud on Kubernetes) operator..."
+          helm install elastic-operator elastic/eck-operator \
+            --namespace elastic-system \
+            --create-namespace \
+            --version 2.12.1 \
+            --wait --timeout 5m
+
+          echo "Waiting for ECK operator to be ready..."
+          kubectl wait --for=condition=ready pod \
+            -l control-plane=elastic-operator \
+            -n elastic-system \
+            --timeout=120s
+
+          echo "✅ ECK operator is running:"
+          kubectl get pods -n elastic-system
+
+      # -----------------------------------------------------------------------
+      # Step 9: Print summary of what was created
+      # -----------------------------------------------------------------------
+      - name: Deployment Summary
+        run: |
+          echo "============================================"
+          echo "  INFRASTRUCTURE DEPLOYMENT COMPLETE"
+          echo "============================================"
+          echo ""
+          echo "Resource Group: ${{ env.RESOURCE_GROUP }}"
+          echo "AKS Cluster:   ${{ env.CLUSTER_NAME }}"
+          echo "Region:         ${{ env.LOCATION }}"
+          echo "Nodes:          ${{ env.NODE_COUNT }} × ${{ env.NODE_SIZE }}"
+          echo "K8s Version:    1.32"
+          echo "Network:        Azure CNI + Calico"
+          echo ""
+          echo "Namespaces:"
+          kubectl get namespaces --no-headers | grep -E "elastic|otel|online|ingress|monitoring"
+          echo ""
+          echo "ECK Operator:"
+          kubectl get pods -n elastic-system --no-headers
+          echo ""
+          echo "NEXT STEP: Run workflow '2 - Deploy Observability Stack'"
+          echo "============================================"

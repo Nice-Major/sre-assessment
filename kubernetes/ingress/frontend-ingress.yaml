@@ -1,0 +1,38 @@
+# =============================================================================
+# INGRESS: Frontend (Online Boutique Web UI)
+# =============================================================================
+# PURPOSE:
+#   Makes the Online Boutique web application accessible from the internet.
+#   Users visit http://<INGRESS_IP>.nip.io and see the e-commerce store.
+#
+# HOW IT WORKS:
+#   1. User's browser sends HTTP request to the public IP
+#   2. Azure Load Balancer forwards to NGINX Ingress Controller pod
+#   3. NGINX matches the host header and routes to the frontend service
+#   4. frontend service routes to the frontend pod (Go web server on port 8080)
+#
+# NOTE: INGRESS_IP_PLACEHOLDER is replaced with the actual IP at deploy time
+#   by the GitHub Actions workflow using `sed`.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: online-boutique
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "INGRESS_IP_PLACEHOLDER.nip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

@@ -1,0 +1,300 @@
+# =============================================================================
+# NETWORK POLICIES — Kubernetes Native (enforced by Calico CNI)
+# =============================================================================
+# PURPOSE:
+#   Network Policies define which pods can communicate with which.
+#   This satisfies Section 3.3 of the assessment: "Network Monitoring."
+#
+#   Security principle: DEFAULT DENY + explicit ALLOW
+#   → Start by blocking ALL traffic into the online-boutique namespace
+#   → Then only allow the specific connections each service needs
+#
+# HOW IT WORKS:
+#   Kubernetes Network Policies are like firewall rules for pods.
+#   Calico (our CNI plugin selected during AKS creation) ENFORCES these
+#   policies at the network level. When a connection is denied, Calico
+#   generates a flow log entry — which we ship to Elasticsearch for monitoring.
+#
+# WHY THIS MATTERS FOR SRE:
+#   1. SECURITY: Limits blast radius — if one service is compromised,
+#      it can only reach the services it's supposed to talk to
+#   2. MONITORING: Denied connections show up in Calico flow logs,
+#      which triggers our "Unexpected external egress" alert
+#   3. DOCUMENTATION: The policies serve as living documentation of
+#      the application's service-to-service communication patterns
+#
+# COMMUNICATION MAP (what each policy allows):
+#   Internet → NGINX Ingress → frontend
+#   frontend → productcatalog, cart, currency, shipping, checkout, recommendation, ad
+#   checkout → payment, shipping, cart, currency, email
+#   cart → redis
+#   recommendation → productcatalog
+#   ALL pods → OTel Agent (port 4317/4318 for telemetry)
+#   ALL pods → DNS (port 53 for name resolution)
+# =============================================================================
+
+# Policy 1: DEFAULT DENY ALL INGRESS
+# Block ALL incoming traffic to pods in online-boutique namespace.
+# This is the foundation — everything is blocked unless explicitly allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: online-boutique
+spec:
+  podSelector: {}  # Applies to ALL pods in the namespace
+  policyTypes:
+    - Ingress
+
+---
+# Policy 2: Allow NGINX Ingress → Frontend
+# External users can only reach the frontend (via NGINX Ingress Controller)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# Policy 3: Frontend → Backend Services
+# The frontend web UI needs to call multiple backend services via gRPC
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backends
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Egress
+  egress:
+    # Product Catalog
+    - to:
+        - podSelector:
+            matchLabels:
+              app: productcatalogservice
+      ports:
+        - port: 3550
+    # Cart Service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: cartservice
+      ports:
+        - port: 7070
+    # Currency Service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: currencyservice
+      ports:
+        - port: 7000
+    # Shipping Service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: shippingservice
+      ports:
+        - port: 50051
+    # Checkout Service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: checkoutservice
+      ports:
+        - port: 5050
+    # Recommendation Service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: recommendationservice
+      ports:
+        - port: 8080
+    # Ad Service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: adservice
+      ports:
+        - port: 9555
+    # DNS resolution (required for service discovery)
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Policy 4: Checkout → Backend Services
+# The checkout service orchestrates the checkout flow, calling multiple services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-checkout-to-backends
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: checkoutservice
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: paymentservice
+      ports:
+        - port: 50051
+    - to:
+        - podSelector:
+            matchLabels:
+              app: shippingservice
+      ports:
+        - port: 50051
+    - to:
+        - podSelector:
+            matchLabels:
+              app: cartservice
+      ports:
+        - port: 7070
+    - to:
+        - podSelector:
+            matchLabels:
+              app: currencyservice
+      ports:
+        - port: 7000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: emailservice
+      ports:
+        - port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: productcatalogservice
+      ports:
+        - port: 3550
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Policy 5: Cart Service → Redis
+# Cart service stores shopping carts in Redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cart-to-redis
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: cartservice
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis-cart
+      ports:
+        - port: 6379
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+
+---
+# Policy 6: Recommendation → Product Catalog
+# Recommendation service reads from the product catalog
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-recommendation-to-catalog
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: recommendationservice
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: productcatalogservice
+      ports:
+        - port: 3550
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+
+---
+# Policy 7: ALL pods → OTel Agent (for sending telemetry)
+# Every pod needs to send traces, metrics, and logs to the OTel Agent
+# The OTel Agent runs in the otel-system namespace on ports 4317/4318
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-otel-egress
+  namespace: online-boutique
+spec:
+  podSelector: {}  # Applies to ALL pods
+  policyTypes:
+    - Egress
+  egress:
+    # OTel Agent gRPC (OTLP)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: otel-system
+      ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+    # DNS resolution
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Policy 8: Allow ingress to backend services from within the namespace
+# Backend services need to accept gRPC calls from other services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-internal-ingress
+  namespace: online-boutique
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}  # Any pod in the same namespace

@@ -1,0 +1,50 @@
+# =============================================================================
+# KUBERNETES NAMESPACES
+# =============================================================================
+# PURPOSE:
+#   Defines all the namespaces used in this deployment. Namespaces are like
+#   folders inside Kubernetes — they isolate workloads from each other and
+#   let us apply different security policies per namespace.
+#
+# HOW IT FITS:
+#   This is applied FIRST (by the infrastructure workflow) because all other
+#   resources must be created inside a namespace.
+#
+# NAMESPACES:
+#   elastic          → Elasticsearch, Kibana, APM Server, Fleet Server
+#   otel-system      → OpenTelemetry Collector Agent (DaemonSet) + Gateway
+#   online-boutique  → The 11 microservices + PostgreSQL + Redis
+#   ingress-nginx    → NGINX Ingress Controller (created by Helm, listed here for documentation)
+#   monitoring       → Filebeat instances for Calico flow logs + kube audit logs
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: elastic
+  labels:
+    project: sre-assessment
+    component: observability
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-system
+  labels:
+    project: sre-assessment
+    component: telemetry-collection
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: online-boutique
+  labels:
+    project: sre-assessment
+    component: application
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    project: sre-assessment
+    component: infrastructure-monitoring

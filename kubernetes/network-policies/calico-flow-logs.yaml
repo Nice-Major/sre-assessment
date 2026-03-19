@@ -1,0 +1,179 @@
+# =============================================================================
+# CALICO FLOW LOGS — Filebeat Collector
+# =============================================================================
+# PURPOSE:
+#   Calico (our CNI plugin) generates FLOW LOGS for every network connection
+#   in the cluster — both ALLOWED and DENIED connections. These logs are
+#   written to files on each node.
+#
+#   This manifest deploys a Filebeat DaemonSet that:
+#   1. Reads Calico flow log files from /var/log/calico/ on each node
+#   2. Parses the JSON and enriches with metadata
+#   3. Ships them to Elasticsearch for monitoring and alerting
+#
+# HOW IT FITS:
+#   Network Policies (policies.yaml) → Calico enforces them →
+#   Calico writes flow logs → Filebeat reads logs → Elasticsearch →
+#   Kibana (dashboards + alerts for denied connections)
+#
+# WHY THIS MATTERS:
+#   - The "Unexpected external egress" alert (alerting rule #8) triggers
+#     when Calico logs a DENIED connection, indicating either:
+#     a) A misconfigured service trying to talk to something it shouldn't
+#     b) A potential security breach attempting lateral movement
+#   - Flow logs also show normal traffic patterns for capacity planning
+#
+# CALICO CONFIGURATION:
+#   The FelixConfiguration resource tells Calico to:
+#   - Write flow logs to /var/log/calico/flowlogs/ (flowLogsFileEnabled)
+#   - Flush every 15 seconds (flowLogsFlushInterval)
+#   - Include network set info (flowLogsEnableNetworkSets)
+# =============================================================================
+
+# Configure Calico to write flow logs to disk
+apiVersion: projectcalico.org/v3
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  flowLogsFileEnabled: true
+  flowLogsFileDirectory: /var/log/calico/flowlogs
+  flowLogsFlushInterval: "15s"
+  flowLogsEnableNetworkSets: true
+
+---
+# ServiceAccount for Filebeat to read Kubernetes metadata
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: calico-flowlog-filebeat
+  namespace: monitoring
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calico-flowlog-filebeat
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calico-flowlog-filebeat
+subjects:
+  - kind: ServiceAccount
+    name: calico-flowlog-filebeat
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: calico-flowlog-filebeat
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Filebeat DaemonSet — runs on every node to read that node's Calico logs
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: calico-flowlog-filebeat
+  namespace: monitoring
+  labels:
+    app: calico-flowlog-filebeat
+spec:
+  selector:
+    matchLabels:
+      app: calico-flowlog-filebeat
+  template:
+    metadata:
+      labels:
+        app: calico-flowlog-filebeat
+    spec:
+      serviceAccountName: calico-flowlog-filebeat
+      containers:
+        - name: filebeat
+          image: docker.elastic.co/beats/filebeat:8.13.4
+          args: ["-c", "/etc/filebeat/filebeat.yml", "-e"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            # Filebeat configuration
+            - name: config
+              mountPath: /etc/filebeat/filebeat.yml
+              subPath: filebeat.yml
+              readOnly: true
+            # Calico flow log directory on the host
+            - name: calico-logs
+              mountPath: /var/log/calico
+              readOnly: true
+            # Filebeat data directory (registry to track read position)
+            - name: data
+              mountPath: /usr/share/filebeat/data
+      volumes:
+        - name: config
+          configMap:
+            name: calico-flowlog-filebeat-config
+        - name: calico-logs
+          hostPath:
+            path: /var/log/calico
+            type: DirectoryOrCreate
+        - name: data
+          emptyDir: {}
+
+---
+# Filebeat configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: calico-flowlog-filebeat-config
+  namespace: monitoring
+data:
+  filebeat.yml: |
+    # Read Calico flow log files (JSON format)
+    filebeat.inputs:
+      - type: filestream
+        id: calico-flowlogs
+        paths:
+          - /var/log/calico/flowlogs/*.log
+        parsers:
+          - ndjson:
+              keys_under_root: true
+              overwrite_keys: true
+              add_error_key: true
+        fields:
+          event.kind: event
+          event.category: network
+          event.type: connection
+        fields_under_root: true
+
+    # Ship to Elasticsearch (using internal cluster DNS)
+    output.elasticsearch:
+      hosts:
+        - "https://elasticsearch-es-http.elastic.svc.cluster.local:9200"
+      username: "elastic"
+      # Password is sourced from the ECK-generated secret
+      password: "${ELASTIC_PASSWORD}"
+      ssl.verification_mode: none
+      index: "logs-calico.flowlog-assessment"
+
+    # Add processors to enrich the data
+    processors:
+      - rename:
+          fields:
+            - from: "source_name"
+              to: "source.pod.name"
+            - from: "dest_name"
+              to: "destination.pod.name"
+            - from: "source_namespace"
+              to: "source.namespace"
+            - from: "dest_namespace"
+              to: "destination.namespace"
+          ignore_missing: true
+          fail_on_error: false

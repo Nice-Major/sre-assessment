@@ -1,0 +1,136 @@
+# =============================================================================
+# POSTGRESQL — StatefulSet for Database Monitoring
+# =============================================================================
+# PURPOSE:
+#   PostgreSQL is NOT part of the original Online Boutique application.
+#   We deploy it EXPLICITLY to satisfy Section 3.2 of the assessment:
+#   "Database Monitoring" — which requires monitoring a real database.
+#
+#   It stores a sample "boutique_db" database that we can monitor for:
+#   - Connection pool usage (active connections vs max_connections)
+#   - Cache hit ratio (how often data is served from memory vs disk)
+#   - Slow queries (queries taking > 200ms)
+#   - Transaction rates (commits vs rollbacks)
+#
+# HOW IT FITS:
+#   PostgreSQL pod runs in the online-boutique namespace.
+#   Elastic Agent (managed by Fleet Server) connects to it and scrapes metrics.
+#   Those metrics flow to Elasticsearch and appear in Kibana dashboards.
+#
+#   The connection string for monitoring:
+#     postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc:5432/boutique_db
+#
+# KEY CONFIGURATION:
+#   - shared_preload_libraries=pg_stat_statements
+#     → Enables query performance tracking (which queries are slow)
+#   - log_min_duration_statement=200
+#     → Logs any query taking > 200ms (for slow query monitoring)
+#   - max_connections=100
+#     → Alert fires at 80% = 80 connections
+# =============================================================================
+
+# Secret containing the database password
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-credentials
+  namespace: online-boutique
+type: Opaque
+stringData:
+  POSTGRES_USER: boutique
+  POSTGRES_PASSWORD: assessment-pg-pass
+  POSTGRES_DB: boutique_db
+
+---
+# PostgreSQL StatefulSet (StatefulSet for stable network identity + persistent storage)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: online-boutique
+  labels:
+    app: postgresql
+spec:
+  serviceName: postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgresql-credentials
+          # PostgreSQL configuration flags (passed as command-line arguments)
+          args:
+            # Enable pg_stat_statements for query performance tracking
+            - "-c"
+            - "shared_preload_libraries=pg_stat_statements"
+            # Track execution stats for ALL statements
+            - "-c"
+            - "pg_stat_statements.track=all"
+            # Log queries slower than 200ms
+            - "-c"
+            - "log_min_duration_statement=200"
+            # Log DDL statements (CREATE TABLE, ALTER, etc.)
+            - "-c"
+            - "log_statement=ddl"
+            # Maximum 100 concurrent connections (alert at 80 = 80%)
+            - "-c"
+            - "max_connections=100"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "boutique", "-d", "boutique_db"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "boutique", "-d", "boutique_db"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+# Headless Service (required for StatefulSet DNS resolution)
+# Other pods can reach PostgreSQL at: postgresql.online-boutique.svc.cluster.local:5432
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: online-boutique
+  labels:
+    app: postgresql
+spec:
+  clusterIP: None
+  selector:
+    app: postgresql
+  ports:
+    - name: tcp-postgresql
+      port: 5432
+      targetPort: 5432

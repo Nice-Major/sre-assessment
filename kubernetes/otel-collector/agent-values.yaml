@@ -1,0 +1,200 @@
+# =============================================================================
+# OPENTELEMETRY COLLECTOR — AGENT (DaemonSet) Helm Values
+# =============================================================================
+# PURPOSE:
+#   The OTel Agent runs as a DaemonSet — meaning Kubernetes ensures ONE copy
+#   runs on EVERY node in the cluster. This is important because:
+#
+#   1. LOW-LATENCY COLLECTION: Application pods send telemetry to the Agent
+#      on the SAME NODE (via hostPort 4317). No cross-node network hops.
+#
+#   2. NODE-LEVEL METRICS: The Agent collects hostmetrics (CPU, memory, disk,
+#      network) from the node it runs on. Each Agent reports its own node.
+#
+#   3. KUBERNETES ENRICHMENT: The k8sattributes processor adds pod name,
+#      namespace, deployment name, and labels to every piece of telemetry.
+#      This is WHY you see "pod: frontend-abc123" in your traces.
+#
+# DATA FLOW:
+#   App Pod (same node)  →  OTel Agent  →  OTel Gateway  →  APM Server
+#   Node hostmetrics     →  OTel Agent  →  OTel Gateway  →  APM Server
+#
+# HOW APPS SEND DATA TO THE AGENT:
+#   Each instrumented pod has env var:
+#     OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-agent-opentelemetry-collector.otel-system.svc:4317
+#   The OTel SDK in the app reads this variable and sends gRPC OTLP to that address.
+#   Because the Agent uses hostPort, the data goes to the Agent on the same node.
+#
+# RECEIVERS (how data enters the Agent):
+#   - otlp: gRPC (port 4317) and HTTP (port 4318) — from application pods
+#   - hostmetrics: CPU, memory, disk, filesystem, network (from the node itself)
+#
+# PROCESSORS (how data is enriched/modified):
+#   - memory_limiter: Prevents the Agent from using too much memory
+#   - k8sattributes: Adds Kubernetes metadata to every trace/metric/log
+#   - resourcedetection: Adds host.name, os.type, cloud.provider
+#   - batch: Batches data before sending (reduces network overhead)
+#   - resource: Adds static attributes (deployment.environment=assessment)
+#
+# EXPORTERS (where data goes):
+#   - otlp: Forwards everything to the OTel Gateway in otel-system namespace
+# =============================================================================
+
+mode: daemonset
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.97.0"
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Expose OTLP ports on the host so pods can send data via the node's IP
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    hostPort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    hostPort: 4318
+    protocol: TCP
+
+config:
+  # ---------------------------------------------------------------------------
+  # RECEIVERS: How telemetry data enters this collector
+  # ---------------------------------------------------------------------------
+  receivers:
+    # Accept OTLP protocol over gRPC and HTTP from application pods
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+    # Collect metrics directly from the node this Agent runs on
+    # This covers Section 3.1 of the assessment (Compute Monitoring)
+    hostmetrics:
+      collection_interval: 30s
+      scrapers:
+        cpu:           # CPU utilization per core
+          metrics:
+            system.cpu.utilization:
+              enabled: true
+        memory:        # Memory used/available/cached
+          metrics:
+            system.memory.utilization:
+              enabled: true
+        disk:          # Disk I/O operations and throughput
+        filesystem:    # Filesystem usage percentages
+        network:       # Network bytes/packets/errors per interface
+        load:          # System load averages (1/5/15 min)
+        processes:     # Process count and states
+
+  # ---------------------------------------------------------------------------
+  # PROCESSORS: How telemetry data is enriched and modified
+  # ---------------------------------------------------------------------------
+  processors:
+    # Prevent the Agent from consuming too much memory
+    # If memory exceeds 400MB, it starts dropping data to stay alive
+    memory_limiter:
+      check_interval: 5s
+      limit_mib: 400
+      spike_limit_mib: 100
+
+    # Group data into batches before sending to reduce network calls
+    batch:
+      timeout: 5s
+      send_batch_size: 1024
+
+    # Auto-detect the environment (node hostname, OS, cloud provider)
+    resourcedetection:
+      detectors: [env, system]
+      timeout: 5s
+      override: false
+
+    # THE KEY PROCESSOR: Adds Kubernetes metadata to every telemetry item
+    # When you see a trace span with "k8s.pod.name=frontend-7b8f4c" — this is why.
+    # It queries the K8s API to resolve pod IP → pod metadata.
+    k8sattributes:
+      auth_type: "serviceAccount"
+      passthrough: false
+      extract:
+        metadata:
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.namespace.name
+          - k8s.deployment.name
+          - k8s.node.name
+          - k8s.container.name
+        labels:
+          - tag_name: app
+            key: app
+            from: pod
+      pod_association:
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.ip
+
+    # Add a static attribute to all telemetry identifying the environment
+    resource:
+      attributes:
+        - key: deployment.environment
+          value: assessment
+          action: upsert
+
+  # ---------------------------------------------------------------------------
+  # EXPORTERS: Where telemetry data goes after processing
+  # ---------------------------------------------------------------------------
+  exporters:
+    # Forward all data to the OTel Gateway (central collector)
+    # The Gateway performs tail-based sampling before sending to Elastic
+    otlp:
+      endpoint: "otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"
+      tls:
+        insecure: true
+
+    # Debug output (useful for troubleshooting, logs to Agent pod stdout)
+    debug:
+      verbosity: basic
+
+  # ---------------------------------------------------------------------------
+  # EXTENSIONS: Health check and diagnostic endpoints
+  # ---------------------------------------------------------------------------
+  extensions:
+    health_check:
+      endpoint: "0.0.0.0:13133"
+    zpages:
+      endpoint: "0.0.0.0:55679"
+
+  # ---------------------------------------------------------------------------
+  # SERVICE: Wires receivers → processors → exporters into pipelines
+  # ---------------------------------------------------------------------------
+  service:
+    extensions: [health_check, zpages]
+    pipelines:
+      # Trace pipeline: app traces → enrich with K8s metadata → send to Gateway
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, resourcedetection, resource, batch]
+        exporters: [otlp, debug]
+
+      # Metrics pipeline: app metrics + host metrics → enrich → send to Gateway
+      metrics:
+        receivers: [otlp, hostmetrics]
+        processors: [memory_limiter, k8sattributes, resourcedetection, resource, batch]
+        exporters: [otlp]
+
+      # Logs pipeline: app logs → enrich with K8s metadata → send to Gateway
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, resource, batch]
+        exporters: [otlp]

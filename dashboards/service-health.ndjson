@@ -1,1 +1,0 @@
-{"type":"dashboard","id":"service-health-overview","attributes":{"title":"Service Health Overview","description":"RED metrics, service dependency map, Apdex scores, and error rate trends for all instrumented services","kibanaSavedObjectMeta":{"searchSourceJSON":"{}"}},"references":[]}

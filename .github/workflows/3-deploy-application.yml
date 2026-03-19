@@ -1,0 +1,292 @@
+# =============================================================================
+# GITHUB ACTIONS WORKFLOW: Deploy Application (Step 3 of 3)
+# =============================================================================
+# PURPOSE:
+#   This is the THIRD and FINAL workflow. It deploys:
+#   - The Google Online Boutique application (11 microservices)
+#   - PostgreSQL database (added for database monitoring)
+#   - Instrumentation patches (OTel environment variables for each service)
+#   - Network policies (security: control which pods can talk to which)
+#   - Infrastructure monitoring (Calico flow logs, kube audit logs)
+#   - Alerting rules (11 rules in Kibana for automated problem detection)
+#   - Traffic generator (to produce observable data)
+#
+# HOW IT FITS:
+#   1. deploy-infrastructure.yml → Created AKS + ECK operator ✓
+#   2. deploy-observability.yml → Deployed Elastic + OTel + Ingress ✓
+#   3. THIS WORKFLOW → Deploys the app + wires up everything
+#
+# THE APPLICATION EXPLAINED:
+#   Google Online Boutique (github.com/GoogleCloudPlatform/microservices-demo)
+#   is a sample e-commerce app with 11 microservices:
+#     - frontend (Go): Web UI, serves HTML pages
+#     - cartservice (C#): Shopping cart backed by Redis
+#     - productcatalogservice (Go): Product listing
+#     - currencyservice (Node.js): Currency conversion
+#     - paymentservice (Node.js): Payment processing
+#     - shippingservice (Go): Shipping cost calculation
+#     - emailservice (Python): Order confirmation emails
+#     - checkoutservice (Go): Orchestrates checkout flow
+#     - recommendationservice (Python): Product recommendations
+#     - adservice (Java): Advertising
+#     - loadgenerator (Python/Locust): Synthetic traffic
+#
+#   We DON'T modify the application source code. Instead, we:
+#   1. Deploy it from vendored Kubernetes manifests (kubernetes/application/)
+#   2. Patch deployments with OTel environment variables (k8s-patch.yaml)
+#   3. These env vars tell the OTel SDK (already built into the images)
+#      where to send telemetry data (→ OTel Agent on port 4317)
+#
+# PREREQUISITES:
+#   - Steps 1 and 2 workflows must have completed successfully
+# =============================================================================
+
+name: "3 - Deploy Application"
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: application-deploy
+  cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: sre-assessment-rg
+  CLUSTER_NAME: sre-assessment-aks
+
+jobs:
+  deploy-application:
+    name: "Deploy Online Boutique + Monitoring"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS Credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.CLUSTER_NAME }} \
+            --overwrite-existing
+
+      # -----------------------------------------------------------------------
+      # DEPLOY THE APPLICATION
+      # -----------------------------------------------------------------------
+      # The Online Boutique manifests are "vendored" — we have a copy in our
+      # repo at kubernetes/application/online-boutique.yaml. This is better
+      # than applying from a remote URL because:
+      #   - We control exactly what version we deploy
+      #   - We can review and modify the manifests
+      #   - Deployment doesn't depend on Google's servers being reachable
+      #   - Git history shows exactly what changed
+      # -----------------------------------------------------------------------
+
+      - name: Deploy Online Boutique
+        run: |
+          echo "Deploying Online Boutique (11 microservices) to 'online-boutique' namespace..."
+          kubectl apply -f kubernetes/application/online-boutique.yaml
+
+          echo "Deploying PostgreSQL (for database monitoring assessment)..."
+          kubectl apply -f kubernetes/application/postgresql.yaml
+
+          echo "Waiting for all pods to be ready (timeout: 5 minutes)..."
+          kubectl wait --for=condition=ready pod --all \
+            -n online-boutique --timeout=300s || true
+
+          echo "✅ Application pods:"
+          kubectl get pods -n online-boutique
+
+      # -----------------------------------------------------------------------
+      # APPLY INSTRUMENTATION PATCHES
+      # -----------------------------------------------------------------------
+      # This is HOW we connect the application to the OTel Collectors.
+      # Each patch adds environment variables to the deployment spec:
+      #
+      #   OTEL_EXPORTER_OTLP_ENDPOINT — tells the OTel SDK where to send data
+      #     → Points to the OTel Agent running on the same node (DaemonSet)
+      #     → Address: otel-agent-opentelemetry-collector.otel-system.svc:4317
+      #
+      #   OTEL_SERVICE_NAME — identifies this service in traces
+      #   OTEL_RESOURCE_ATTRIBUTES — adds version + environment labels
+      #
+      # The Online Boutique images already include OTel SDK auto-instrumentation
+      # for their respective languages. These env vars just configure WHERE
+      # the SDK sends its telemetry. No code changes needed.
+      # -----------------------------------------------------------------------
+
+      - name: Apply Instrumentation Patches
+        run: |
+          echo "Patching services with OTel configuration..."
+
+          for patch in instrumentation/*/k8s-patch.yaml; do
+            service=$(basename $(dirname "$patch"))
+            echo "  Patching $service..."
+            kubectl apply -f "$patch"
+          done
+
+          echo "Waiting for patched pods to restart..."
+          sleep 10
+          kubectl rollout status deployment/frontend -n online-boutique --timeout=120s || true
+          kubectl rollout status deployment/cartservice -n online-boutique --timeout=120s || true
+          kubectl rollout status deployment/paymentservice -n online-boutique --timeout=120s || true
+
+          echo "✅ Instrumentation patches applied"
+
+      # -----------------------------------------------------------------------
+      # CREATE FRONTEND INGRESS
+      # -----------------------------------------------------------------------
+      # This makes the Online Boutique web UI accessible from the internet.
+      # Traffic flow: Browser → NGINX Ingress (public IP) → frontend service
+      # -----------------------------------------------------------------------
+
+      - name: Create Frontend Ingress
+        run: |
+          INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+          sed "s/INGRESS_IP_PLACEHOLDER/$INGRESS_IP/g" \
+            kubernetes/ingress/frontend-ingress.yaml | kubectl apply -f -
+
+          echo "✅ Frontend accessible at: http://$INGRESS_IP.nip.io"
+
+      # -----------------------------------------------------------------------
+      # APPLY NETWORK POLICIES
+      # -----------------------------------------------------------------------
+      # Network Policies control which pods can communicate with which.
+      # This is SECURITY + MONITORING (Section 3.3 of the assessment):
+      #
+      #   Default: DENY all ingress to online-boutique namespace
+      #   Then allow ONLY the connections each service actually needs:
+      #     - Frontend can receive traffic from NGINX Ingress
+      #     - Frontend can call product catalog, cart, currency, etc.
+      #     - Cart service can call Redis
+      #     - Checkout service can call payment, shipping, etc.
+      #     - All services can send OTLP to the OTel Agent
+      #
+      # Calico (our CNI) enforces these policies AND generates flow logs
+      # for every allowed/denied connection → shipped to Elasticsearch.
+      # -----------------------------------------------------------------------
+
+      - name: Apply Network Policies
+        run: |
+          echo "Applying network policies (default-deny + allow-listed paths)..."
+          kubectl apply -f kubernetes/network-policies/policies.yaml
+          echo "✅ Network policies applied"
+
+          echo "Deploying Calico flow log collector..."
+          kubectl apply -f kubernetes/network-policies/calico-flow-logs.yaml
+          echo "✅ Calico flow logs will be shipped to Elasticsearch"
+
+      # -----------------------------------------------------------------------
+      # DEPLOY MONITORING COLLECTORS
+      # -----------------------------------------------------------------------
+      # These collect infrastructure-level metrics and logs:
+      #   - Filebeat for Kubernetes audit logs (track network policy changes)
+      #   - Elastic Agent with system metrics (CPU, memory, disk per node)
+      #   - PostgreSQL integration (connections, cache hit ratio, slow queries)
+      #   - Redis integration (memory, connected clients, evictions)
+      #   - NGINX integration (request rates, status codes, latency)
+      # -----------------------------------------------------------------------
+
+      - name: Deploy Monitoring Collectors
+        run: |
+          echo "Deploying Kubernetes audit log collector..."
+          kubectl apply -f kubernetes/monitoring/kube-audit-filebeat.yaml
+
+          echo "Deploying infrastructure monitoring configs..."
+          # These are Elastic Agent integration configs — they tell Fleet Server
+          # what data to collect from PostgreSQL, Redis, and NGINX
+          kubectl apply -f kubernetes/monitoring/elastic-agent-config.yaml
+
+          echo "✅ Infrastructure monitoring deployed"
+
+      # -----------------------------------------------------------------------
+      # CREATE ALERTING RULES
+      # -----------------------------------------------------------------------
+      # 11 alerting rules in Kibana that fire when something goes wrong:
+      #
+      # Section 3.1 — Compute:
+      #   1. CPU > 85% sustained for 5 minutes
+      #   2. Disk usage > 90%
+      #   3. Available memory < 500MB
+      #
+      # Section 3.2 — Databases:
+      #   4. PostgreSQL connections > 80% of max (100)
+      #   5. PostgreSQL cache hit ratio < 95%
+      #   6. Redis memory > 85% of max
+      #   7. Redis eviction rate > 100 keys/5min
+      #
+      # Section 3.3 — Network:
+      #   8. Unexpected denied egress connections
+      #
+      # Section 3.4 — Load Balancer:
+      #   9. HTTP 5xx error rate > 5% over 2 minutes
+      #   10. HTTP 502/503 backend errors > 3 in 2 minutes
+      #   11. SSL certificate expires in < 14 days
+      # -----------------------------------------------------------------------
+
+      - name: Create Alerting Rules
+        run: |
+          echo "Creating alerting rules in Kibana..."
+
+          INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          KIBANA_URL="http://kibana.$INGRESS_IP.nip.io"
+          ES_PASS=$(kubectl get secret elasticsearch-es-elastic-user -n elastic \
+            -o jsonpath='{.data.elastic}' | base64 -d)
+
+          # Wait for Kibana to be reachable via Ingress
+          echo "Waiting for Kibana to be reachable..."
+          for i in $(seq 1 20); do
+            if curl -s -o /dev/null -w "%{http_code}" "$KIBANA_URL/api/status" | grep -q "200"; then
+              echo "  Kibana is reachable"
+              break
+            fi
+            echo "  Waiting... ($i/20)"
+            sleep 15
+          done
+
+          bash kubernetes/alerting/create-alerting-rules.sh "$KIBANA_URL" "elastic" "$ES_PASS"
+          echo "✅ Alerting rules created"
+
+      # -----------------------------------------------------------------------
+      # FINAL SUMMARY
+      # -----------------------------------------------------------------------
+
+      - name: Deployment Summary
+        run: |
+          INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          ES_PASS=$(kubectl get secret elasticsearch-es-elastic-user -n elastic \
+            -o jsonpath='{.data.elastic}' | base64 -d)
+
+          echo "============================================"
+          echo "  FULL DEPLOYMENT COMPLETE 🚀"
+          echo "============================================"
+          echo ""
+          echo "APPLICATION:"
+          echo "  Online Boutique: http://$INGRESS_IP.nip.io"
+          echo ""
+          echo "OBSERVABILITY:"
+          echo "  Kibana:          http://kibana.$INGRESS_IP.nip.io"
+          echo "  Username:        elastic"
+          echo "  Password:        $ES_PASS"
+          echo "  APM Server:      http://apm.$INGRESS_IP.nip.io"
+          echo ""
+          echo "PODS:"
+          kubectl get pods --all-namespaces --no-headers | wc -l
+          echo " total pods running"
+          echo ""
+          echo "To generate traffic:"
+          echo "  bash scripts/generate-traffic.sh"
+          echo ""
+          echo "To access locally:"
+          echo "  az aks get-credentials -g ${{ env.RESOURCE_GROUP }} -n ${{ env.CLUSTER_NAME }}"
+          echo "============================================"

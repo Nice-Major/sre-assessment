@@ -1,4 +1,20 @@
-# Kubernetes deployment patch for cartservice — injects OTel env vars
+# =============================================================================
+# INSTRUMENTATION PATCH: Cart Service (C# / .NET)
+# =============================================================================
+# PURPOSE:
+#   Adds OTel environment variables to the cartservice Deployment.
+#   Same approach as the frontend patch — no code or image changes needed.
+#
+#   Cart Service is interesting for observability because:
+#   - It uses Redis as a backend (Redis operations appear as trace spans)
+#   - It handles gRPC calls from frontend and checkout services
+#   - Cart operations (add/remove/empty) are key business metrics
+#
+# TRACES YOU'LL SEE IN KIBANA:
+#   When a user adds an item to their cart:
+#   frontend → cartservice → Redis
+#   Each hop is a span in the trace, with timing information.
+# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -1,0 +1,286 @@
+# =============================================================================
+# GITHUB ACTIONS WORKFLOW: Deploy Observability Stack (Step 2 of 3)
+# =============================================================================
+# PURPOSE:
+#   This is the SECOND workflow. It deploys the observability infrastructure
+#   onto the AKS cluster that was created in Step 1:
+#   - Elasticsearch (stores all traces, metrics, and logs)
+#   - Kibana (web UI for visualizing data, creating dashboards)
+#   - APM Server (receives traces from OTel + RUM from browsers)
+#   - Fleet Server (manages Elastic Agents for infrastructure metrics)
+#   - NGINX Ingress Controller (load balancer, entry point)
+#   - OTel Collector Gateway (central sampling, exports to APM Server)
+#   - OTel Collector Agent (per-node telemetry collection)
+#
+# HOW IT FITS:
+#   1. deploy-infrastructure.yml → Already created AKS + ECK operator ✓
+#   2. THIS WORKFLOW → Deploys Elastic Stack + OTel collectors
+#   3. deploy-application.yml → Deploys the app + wires up monitoring
+#
+# DATA FLOW (after this workflow completes):
+#   App pods → OTel Agent (DaemonSet, same node) → OTel Gateway → APM Server → Elasticsearch
+#   Browser  → APM Server (via Ingress) → Elasticsearch
+#   K8s node → OTel Agent (hostmetrics) → OTel Gateway → APM Server → Elasticsearch
+#
+# PREREQUISITES:
+#   - Step 1 workflow must have completed successfully
+#   - AKS cluster must be running with ECK operator installed
+# =============================================================================
+
+name: "2 - Deploy Observability Stack"
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: observability-deploy
+  cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: sre-assessment-rg
+  CLUSTER_NAME: sre-assessment-aks
+
+jobs:
+  deploy-observability:
+    name: "Deploy Elastic Stack + OTel Collectors"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS Credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.CLUSTER_NAME }} \
+            --overwrite-existing
+          kubectl get nodes
+
+      - name: Add Helm Repositories
+        run: |
+          helm repo add elastic https://helm.elastic.co
+          helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+      # -----------------------------------------------------------------------
+      # ELASTIC STACK DEPLOYMENT
+      # -----------------------------------------------------------------------
+      # The Elastic Stack components are deployed in order because each one
+      # depends on the previous:
+      #   Elasticsearch → Kibana → APM Server → Fleet Server
+      #
+      # We use ECK custom resources (kind: Elasticsearch, kind: Kibana, etc.)
+      # instead of raw Kubernetes Deployments. The ECK operator (installed in
+      # Step 1) watches for these resources and creates the actual pods,
+      # services, secrets, and TLS certificates automatically.
+      # -----------------------------------------------------------------------
+
+      - name: Deploy Elasticsearch
+        run: |
+          echo "Deploying Elasticsearch (data store for all observability data)..."
+          echo "This takes 2-3 minutes as it provisions storage and starts the JVM."
+          kubectl apply -f kubernetes/elastic-stack/elasticsearch.yaml
+
+          echo "Waiting for Elasticsearch to become healthy..."
+          kubectl wait --for=jsonpath='{.status.health}'=green elasticsearch/elasticsearch \
+            -n elastic --timeout=300s || \
+          kubectl wait --for=jsonpath='{.status.health}'=yellow elasticsearch/elasticsearch \
+            -n elastic --timeout=120s
+
+          echo "✅ Elasticsearch is running:"
+          kubectl get elasticsearch -n elastic
+
+      - name: Deploy Kibana
+        run: |
+          echo "Deploying Kibana (visualization UI)..."
+          kubectl apply -f kubernetes/elastic-stack/kibana.yaml
+
+          echo "Waiting for Kibana to become healthy..."
+          kubectl wait --for=jsonpath='{.status.health}'=green kibana/kibana \
+            -n elastic --timeout=300s
+
+          echo "✅ Kibana is running:"
+          kubectl get kibana -n elastic
+
+      - name: Deploy APM Server
+        run: |
+          echo "Deploying APM Server (receives traces from OTel + RUM from browsers)..."
+          kubectl apply -f kubernetes/elastic-stack/apm-server.yaml
+
+          echo "Waiting for APM Server to be ready..."
+          kubectl wait --for=condition=ready pod \
+            -l apm.k8s.elastic.co/name=apm-server \
+            -n elastic --timeout=180s
+
+          echo "✅ APM Server is running:"
+          kubectl get apmserver -n elastic
+
+      - name: Deploy Fleet Server
+        run: |
+          echo "Deploying Fleet Server (manages Elastic Agents for infra monitoring)..."
+          kubectl apply -f kubernetes/elastic-stack/fleet-server.yaml
+
+          echo "Waiting for Fleet Server to be ready..."
+          kubectl wait --for=condition=ready pod \
+            -l agent.k8s.elastic.co/name=fleet-server \
+            -n elastic --timeout=180s
+
+          echo "✅ Fleet Server is running:"
+          kubectl get agent -n elastic
+
+      # -----------------------------------------------------------------------
+      # NGINX INGRESS CONTROLLER
+      # -----------------------------------------------------------------------
+      # NGINX Ingress Controller is the cluster's front door. It:
+      #   - Assigns a public Azure Load Balancer IP address
+      #   - Routes HTTP traffic to the correct backend service based on hostname
+      #   - Provides access logs (structured JSON) and metrics (Prometheus)
+      #   - Terminates external connections at the cluster boundary
+      #
+      # After this step, the cluster gets a PUBLIC IP that external users and
+      # browsers can reach. We use nip.io for DNS (e.g., kibana.1.2.3.4.nip.io)
+      # which automatically resolves to the IP address in the hostname.
+      # -----------------------------------------------------------------------
+
+      - name: Deploy NGINX Ingress Controller
+        run: |
+          echo "Deploying NGINX Ingress Controller (public load balancer)..."
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --values kubernetes/ingress/nginx-values.yaml \
+            --wait --timeout 5m
+
+          echo "Waiting for LoadBalancer external IP (this may take 1-2 minutes)..."
+          for i in $(seq 1 30); do
+            IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            if [ -n "$IP" ] && [ "$IP" != "null" ]; then
+              echo "✅ NGINX Ingress has external IP: $IP"
+              break
+            fi
+            echo "  Waiting for IP assignment... ($i/30)"
+            sleep 10
+          done
+
+          if [ -z "$IP" ] || [ "$IP" = "null" ]; then
+            echo "⚠️  IP not yet assigned, check later with:"
+            echo "  kubectl get svc ingress-nginx-controller -n ingress-nginx"
+          fi
+
+      # -----------------------------------------------------------------------
+      # CREATE INGRESS ROUTES
+      # -----------------------------------------------------------------------
+      # Now that NGINX is running with a public IP, we create Ingress resources
+      # that tell NGINX how to route traffic:
+      #   - *.nip.io → automatically resolves to the embedded IP
+      #   - kibana.<IP>.nip.io → Kibana service in elastic namespace
+      #   - apm.<IP>.nip.io → APM Server (for browser RUM agent)
+      #   - <IP>.nip.io → Online Boutique frontend (set up in Step 3)
+      # -----------------------------------------------------------------------
+
+      - name: Create Ingress Routes
+        run: |
+          # Get the Ingress external IP for hostname templating
+          INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "Ingress IP: $INGRESS_IP"
+
+          # Template the Ingress manifests with the actual IP
+          sed "s/INGRESS_IP_PLACEHOLDER/$INGRESS_IP/g" \
+            kubernetes/ingress/kibana-ingress.yaml | kubectl apply -f -
+
+          echo "✅ Ingress routes created:"
+          echo "  Kibana:     http://kibana.$INGRESS_IP.nip.io"
+          echo "  APM Server: http://apm.$INGRESS_IP.nip.io"
+
+      # -----------------------------------------------------------------------
+      # OPENTELEMETRY COLLECTORS
+      # -----------------------------------------------------------------------
+      # We run TWO OTel Collector instances with different roles:
+      #
+      # 1. OTel Agent (DaemonSet — one copy per node):
+      #    - Runs on every node, close to the application pods
+      #    - Receives OTLP data from app pods on the same node (port 4317)
+      #    - Also collects hostmetrics (CPU, memory, disk, network)
+      #    - Enriches everything with Kubernetes metadata (pod name, namespace)
+      #    - Forwards everything to the Gateway
+      #
+      # 2. OTel Gateway (Deployment — single central instance):
+      #    - Receives all data from all Agents
+      #    - Performs TAIL-BASED SAMPLING on traces:
+      #      → 100% of error traces (keep every failure)
+      #      → 100% of slow traces (latency > 1 second)
+      #      → 10% of healthy traces (statistical baseline)
+      #    - Exports everything to Elastic APM Server via OTLP HTTP
+      #
+      # WHY two layers?
+      #   - Agent close to pods = low-latency collection + node-level metrics
+      #   - Gateway central = sees complete traces for smart sampling decisions
+      #   - This is the standard production pattern recommended by OpenTelemetry
+      # -----------------------------------------------------------------------
+
+      - name: Deploy OTel Collector Gateway
+        run: |
+          echo "Deploying OTel Collector Gateway (central sampling + export)..."
+          helm upgrade --install otel-gateway open-telemetry/opentelemetry-collector \
+            --namespace otel-system \
+            --values kubernetes/otel-collector/gateway-values.yaml \
+            --wait --timeout 5m
+
+          echo "✅ OTel Gateway deployed"
+
+      - name: Deploy OTel Collector Agent
+        run: |
+          echo "Deploying OTel Collector Agent (per-node telemetry collection)..."
+          helm upgrade --install otel-agent open-telemetry/opentelemetry-collector \
+            --namespace otel-system \
+            --values kubernetes/otel-collector/agent-values.yaml \
+            --wait --timeout 5m
+
+          echo "✅ OTel Agent deployed"
+
+      # -----------------------------------------------------------------------
+      # VERIFY EVERYTHING
+      # -----------------------------------------------------------------------
+
+      - name: Verify Observability Stack
+        run: |
+          echo "============================================"
+          echo "  OBSERVABILITY STACK DEPLOYMENT COMPLETE"
+          echo "============================================"
+          echo ""
+
+          echo "--- Elastic Stack (namespace: elastic) ---"
+          kubectl get all -n elastic
+          echo ""
+
+          echo "--- OTel Collectors (namespace: otel-system) ---"
+          kubectl get all -n otel-system
+          echo ""
+
+          echo "--- NGINX Ingress (namespace: ingress-nginx) ---"
+          kubectl get all -n ingress-nginx
+          echo ""
+
+          INGRESS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          ES_PASS=$(kubectl get secret elasticsearch-es-elastic-user -n elastic \
+            -o jsonpath='{.data.elastic}' | base64 -d)
+
+          echo "ACCESS INFORMATION:"
+          echo "  Kibana URL:       http://kibana.$INGRESS_IP.nip.io"
+          echo "  APM Server URL:   http://apm.$INGRESS_IP.nip.io"
+          echo "  Elasticsearch:    https://elasticsearch-es-http.elastic.svc:9200 (internal)"
+          echo "  ES Username:      elastic"
+          echo "  ES Password:      $ES_PASS"
+          echo ""
+          echo "NEXT STEP: Run workflow '3 - Deploy Application'"
+          echo "============================================"

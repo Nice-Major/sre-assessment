@@ -1,0 +1,126 @@
+<!--
+=============================================================================
+RUM (Real User Monitoring) — Browser-Side Telemetry
+=============================================================================
+PURPOSE:
+  This HTML snippet is injected into the Online Boutique frontend's <head>
+  tag. It loads the Elastic APM RUM Agent — a JavaScript library that runs
+  in the user's browser and captures:
+
+  1. PAGE LOAD METRICS (automatic):
+     - Core Web Vitals: LCP (Largest Contentful Paint), FID (First Input Delay),
+       CLS (Cumulative Layout Shift), TTFB (Time to First Byte)
+     - Navigation timing: DNS, TCP, TLS, server response, DOM processing
+     - Resource loading: JavaScript, CSS, image load times
+
+  2. DISTRIBUTED TRACING (automatic):
+     - Injects a W3C 'traceparent' header into every HTTP request the browser makes
+     - This connects browser spans to backend spans in the SAME trace
+     - In Kibana, you can see: Browser page load → frontend → cart → Redis
+       as a single end-to-end trace
+
+  3. USER INTERACTIONS (custom):
+     - Tracks "Add to Cart" button clicks as custom transactions
+     - Tracks "Checkout" button clicks as custom transactions
+     - Adds custom labels: session ID, page route, device type
+
+HOW IT FITS:
+  Browser (this code) → HTTP request → NGINX Ingress → APM Server
+  APM Server → Elasticsearch → Kibana User Experience dashboard
+
+  The APM Server URL MUST be accessible from the user's browser (not just
+  from inside the cluster). That's why we have an Ingress rule for APM Server
+  at http://apm.<INGRESS_IP>.nip.io
+
+NOTE:
+  To deploy RUM, you would need to:
+  1. Clone the frontend service source code
+  2. Add this snippet to the HTML templates
+  3. Rebuild and push a custom Docker image
+  4. Update the Deployment to use the custom image
+  For the assessment, this file documents the RUM configuration.
+  The RUM data can also be verified by manually injecting this script
+  via browser developer tools.
+=============================================================================
+-->
+
+<!-- Elastic APM RUM Agent — loads from CDN -->
+<script src="https://unpkg.com/@elastic/apm-rum@5.16.0/dist/bundles/elastic-apm-rum.umd.min.js" crossorigin></script>
+<script>
+  // ---------------------------------------------------------------------------
+  // APM Server URL — must be browser-accessible (via Ingress)
+  // The hostname() trick auto-detects the Ingress IP from the current URL
+  // ---------------------------------------------------------------------------
+  var APM_SERVER_URL = 'http://apm.' + window.location.hostname.split('.').slice(0).join('.').replace(/^[^.]+/, 'apm');
+  // Fallback for direct IP access
+  if (!APM_SERVER_URL.includes('nip.io')) {
+    APM_SERVER_URL = 'http://apm.INGRESS_IP_PLACEHOLDER.nip.io';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Initialize the RUM Agent
+  // ---------------------------------------------------------------------------
+  elasticApm.init({
+    // Service identity (appears in Kibana APM under this name)
+    serviceName: 'frontend-rum',
+    serverUrl: APM_SERVER_URL,
+    serviceVersion: '1.0.0',
+    environment: 'assessment',
+
+    // Enable distributed tracing — connects browser spans to backend traces
+    // The browser adds a 'traceparent' (W3C) header to every fetch/XHR request
+    distributedTracingOrigins: [window.location.origin],
+
+    // Name page load transactions by URL path (e.g., "/product/123")
+    pageLoadTransactionName: window.location.pathname,
+
+    // Propagate W3C tracestate header for multi-vendor tracing
+    propagateTracestate: true
+  });
+
+  // ---------------------------------------------------------------------------
+  // Custom context — adds metadata to every RUM event
+  // ---------------------------------------------------------------------------
+  // Generate a session ID for correlating all events from this user session
+  var sessionId = 'sess-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+
+  // Set user context (visible in Kibana APM transaction details)
+  elasticApm.setUserContext({
+    id: sessionId
+  });
+
+  // Add custom labels (filterable in dashboards)
+  elasticApm.addLabels({
+    'page.route': window.location.pathname,
+    'session.id': sessionId,
+    'device.type': /Mobi|Android/i.test(navigator.userAgent) ? 'mobile' : 'desktop'
+  });
+
+  // ---------------------------------------------------------------------------
+  // User interaction tracking — custom transactions for business events
+  // ---------------------------------------------------------------------------
+  document.addEventListener('DOMContentLoaded', function() {
+    // Track "Add to Cart" clicks
+    document.querySelectorAll('[data-action="add-to-cart"], .product-card button').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var transaction = elasticApm.startTransaction('Add to Cart', 'user-interaction');
+        if (transaction) {
+          transaction.addLabels({
+            'product.id': this.closest('[data-product-id]')?.dataset?.productId || 'unknown'
+          });
+          setTimeout(function() { transaction.end(); }, 1000);
+        }
+      });
+    });
+
+    // Track "Checkout" clicks
+    document.querySelectorAll('[data-action="checkout"], form[action*="cart/checkout"]').forEach(function(el) {
+      el.addEventListener('submit', function() {
+        var transaction = elasticApm.startTransaction('Checkout', 'user-interaction');
+        if (transaction) {
+          setTimeout(function() { transaction.end(); }, 2000);
+        }
+      });
+    });
+  });
+</script>
