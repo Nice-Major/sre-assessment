@@ -88,6 +88,12 @@ spec:
         - name: filebeat
           image: docker.elastic.co/beats/filebeat:8.13.4
           args: ["-c", "/etc/filebeat/filebeat.yml", "-e"]
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-es-elastic-user
+                  key: elastic
           resources:
             requests:
               cpu: 100m
@@ -150,10 +156,13 @@ data:
       hosts:
         - "https://elasticsearch-es-http.elastic.svc.cluster.local:9200"
       username: "elastic"
-      # Password is sourced from the ECK-generated secret
       password: "${ELASTIC_PASSWORD}"
       ssl.verification_mode: none
-      index: "logs-calico.flowlog-assessment"
+      index: "logs-calico-flowlog-%{+yyyy.MM.dd}"
+
+    setup.template.name: "logs-calico-flowlog"
+    setup.template.pattern: "logs-calico-flowlog-*"
+    setup.ilm.enabled: false
 
     # Add processors to enrich the data
     processors:

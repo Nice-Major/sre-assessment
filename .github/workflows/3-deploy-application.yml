@@ -186,10 +186,6 @@ jobs:
           kubectl apply -f kubernetes/network-policies/policies.yaml
           echo "✅ Network policies applied"
 
-          echo "Deploying Calico flow log collector..."
-          kubectl apply -f kubernetes/network-policies/calico-flow-logs.yaml
-          echo "✅ Calico flow logs will be shipped to Elasticsearch"
-
       # -----------------------------------------------------------------------
       # DEPLOY MONITORING COLLECTORS
       # -----------------------------------------------------------------------
@@ -203,12 +199,22 @@ jobs:
 
       - name: Deploy Monitoring Collectors
         run: |
+          # Copy ES password secret into the monitoring namespace
+          # (Filebeat DaemonSets need it to authenticate to Elasticsearch)
+          ES_PASS=$(kubectl get secret elasticsearch-es-elastic-user -n elastic \
+            -o jsonpath='{.data.elastic}')
+          kubectl create secret generic elasticsearch-es-elastic-user \
+            --namespace monitoring \
+            --from-literal=elastic="$(echo $ES_PASS | base64 -d)" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
           echo "Deploying Kubernetes audit log collector..."
           kubectl apply -f kubernetes/monitoring/kube-audit-filebeat.yaml
 
+          echo "Deploying Calico flow log configs..."
+          kubectl apply -f kubernetes/network-policies/calico-flow-logs.yaml || true
+
           echo "Deploying infrastructure monitoring configs..."
-          # These are Elastic Agent integration configs — they tell Fleet Server
-          # what data to collect from PostgreSQL, Redis, and NGINX
           kubectl apply -f kubernetes/monitoring/elastic-agent-config.yaml
 
           echo "✅ Infrastructure monitoring deployed"

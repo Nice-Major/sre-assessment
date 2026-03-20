@@ -48,7 +48,11 @@ data:
       username: "elastic"
       password: "${ELASTIC_PASSWORD}"
       ssl.verification_mode: none
-      index: "logs-kube.audit-assessment"
+      index: "logs-kube-audit-%{+yyyy.MM.dd}"
+
+    setup.template.name: "logs-kube-audit"
+    setup.template.pattern: "logs-kube-audit-*"
+    setup.ilm.enabled: false
 
 ---
 apiVersion: apps/v1
@@ -71,6 +75,12 @@ spec:
         - name: filebeat
           image: docker.elastic.co/beats/filebeat:8.13.4
           args: ["-c", "/etc/filebeat/filebeat.yml", "-e"]
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-es-elastic-user
+                  key: elastic
           resources:
             requests:
               cpu: 50m
