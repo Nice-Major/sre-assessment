@@ -144,7 +144,9 @@ config:
     # WHY HTTP not gRPC? Elastic APM Server 8.x accepts OTLP over its HTTP
     # intake endpoint (:8200). This is the officially supported path.
     otlphttp:
-      endpoint: "http://apm-server-apm-http.elastic.svc.cluster.local:8200"
+      endpoint: "https://apm-server-apm-http.elastic.svc.cluster.local:8200"
+      tls:
+        insecure_skip_verify: true
       headers:
         # Authentication token — must match apm-server.auth.secret_token
         Authorization: "Bearer assessment-secret-token"
