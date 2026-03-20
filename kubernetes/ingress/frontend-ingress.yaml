@@ -23,6 +23,13 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # Inject Elastic APM RUM Agent into every HTML page served by the frontend.
+    # This enables Real User Monitoring (browser-side telemetry) without
+    # rebuilding Docker images. NGINX replaces </head> with the RUM script + </head>.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      sub_filter '</head>' '<script src="https://unpkg.com/@elastic/apm-rum@5.16.0/dist/bundles/elastic-apm-rum.umd.min.js" crossorigin></script><script>elasticApm.init({serviceName:"frontend-rum",serverUrl:"http://apm.INGRESS_IP_PLACEHOLDER.nip.io",serviceVersion:"1.0.0",environment:"assessment",distributedTracingOrigins:["http://INGRESS_IP_PLACEHOLDER.nip.io"],pageLoadTransactionName:window.location.pathname,propagateTracestate:true});var sid="sess-"+Date.now()+"-"+Math.random().toString(36).substr(2,9);elasticApm.setUserContext({id:sid});elasticApm.addLabels({"page.route":window.location.pathname,"session.id":sid,"device.type":/Mobi|Android/i.test(navigator.userAgent)?"mobile":"desktop"});</script></head>';
+      sub_filter_once on;
+      sub_filter_types text/html;
 spec:
   ingressClassName: nginx
   rules:

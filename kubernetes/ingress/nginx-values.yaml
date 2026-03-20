@@ -27,6 +27,14 @@
 #   - nginx_ingress_controller_nginx_process_connections: Active connections
 # =============================================================================
 controller:
+  # Allow configuration snippets for RUM injection
+  allowSnippetAnnotations: true
+  
+  # Disable annotation validation that blocks sub_filter as "risky"
+  config:
+    allow-snippet-annotations: "true"
+    annotation-value-word-blocklist: ""
+
   # Prometheus metrics endpoint for monitoring NGINX itself
   metrics:
     enabled: true
