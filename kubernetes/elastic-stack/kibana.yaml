@@ -35,6 +35,12 @@ spec:
   count: 1
   elasticsearchRef:
     name: elasticsearch
+  # Disable TLS on Kibana — it's behind NGINX Ingress which handles external access.
+  # Without this, Kibana shows "A secure connection is required for log in".
+  http:
+    tls:
+      selfSignedCertificate:
+        disabled: true
   config:
     # Public URL (templated with actual IP during Ingress creation)
     server.publicBaseUrl: "http://kibana.INGRESS_IP_PLACEHOLDER.nip.io"

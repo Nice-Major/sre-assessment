@@ -26,8 +26,8 @@ metadata:
   name: kibana-ingress
   namespace: elastic
   annotations:
-    # NGINX talks HTTPS to Kibana backend (ECK enables TLS by default)
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    # Kibana TLS is disabled - use HTTP backend protocol
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
     # Don't redirect HTTP to HTTPS (we're not terminating TLS at Ingress)
