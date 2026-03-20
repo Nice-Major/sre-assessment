@@ -298,3 +298,29 @@ spec:
   ingress:
     - from:
         - podSelector: {}  # Any pod in the same namespace
+
+---
+# Policy 9: Loadgenerator → Frontend (for traffic generation)
+# The loadgenerator needs to reach frontend to generate synthetic traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-loadgenerator-to-frontend
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: loadgenerator
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 8080
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
