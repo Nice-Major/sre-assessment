@@ -11,7 +11,7 @@ spec:
         - name: server
           env:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://otel-agent-opentelemetry-collector.otel-system.svc.cluster.local:4317"
+              value: "http://otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"
             - name: OTEL_SERVICE_NAME
               value: "frontend"
             - name: OTEL_RESOURCE_ATTRIBUTES
@@ -22,3 +22,7 @@ spec:
               value: "otlp"
             - name: OTEL_LOGS_EXPORTER
               value: "otlp"
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"
