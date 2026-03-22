@@ -200,7 +200,7 @@ jobs:
       - name: Deploy Monitoring Collectors
         run: |
           # Copy ES password secret into the monitoring namespace
-          # (Filebeat DaemonSets need it to authenticate to Elasticsearch)
+          # (Filebeat and Elastic Agent DaemonSets need it to authenticate to Elasticsearch)
           ES_PASS=$(kubectl get secret elasticsearch-es-elastic-user -n elastic \
             -o jsonpath='{.data.elastic}')
           kubectl create secret generic elasticsearch-es-elastic-user \
@@ -208,14 +208,24 @@ jobs:
             --from-literal=elastic="$(echo $ES_PASS | base64 -d)" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          echo "Deploying Kubernetes audit log collector..."
+          echo "Deploying Kubernetes audit log collector (kube-audit Filebeat)..."
           kubectl apply -f kubernetes/monitoring/kube-audit-filebeat.yaml
 
           echo "Deploying Calico flow log configs..."
+          # Note: On managed AKS, Calico flow logs are NOT written to /var/log/calico/
+          # by default. The DaemonSet will deploy but harvest 0 files — this is a known
+          # AKS limitation. The DaemonSet is kept for documentation and to show the
+          # intended architecture. Use kube-audit logs for network policy change tracking.
           kubectl apply -f kubernetes/network-policies/calico-flow-logs.yaml || true
 
-          echo "Deploying infrastructure monitoring configs..."
-          kubectl apply -f kubernetes/monitoring/elastic-agent-config.yaml
+          echo "Deploying Elastic Agent DaemonSet (system/postgres/redis/nginx metrics)..."
+          # This is the actual agent that runs the monitoring. The elastic-agent-config.yaml
+          # ConfigMap contains the policy definition but requires this DaemonSet to execute it.
+          kubectl apply -f kubernetes/monitoring/elastic-agent-daemonset.yaml
+
+          echo "Waiting for Elastic Agent pods to start..."
+          sleep 15
+          kubectl get pods -n monitoring
 
           echo "✅ Infrastructure monitoring deployed"
 

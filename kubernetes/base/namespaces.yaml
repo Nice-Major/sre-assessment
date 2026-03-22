@@ -48,3 +48,15 @@ metadata:
   labels:
     project: sre-assessment
     component: infrastructure-monitoring
+---
+# ingress-nginx is created by Helm, but we annotate it here so that
+# Kubernetes NetworkPolicy namespaceSelector can match it by label.
+# kubectl apply is idempotent: if it already exists, only the labels are updated.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx
+  labels:
+    project: sre-assessment
+    component: ingress
+    kubernetes.io/metadata.name: ingress-nginx

@@ -27,13 +27,8 @@
 #   - nginx_ingress_controller_nginx_process_connections: Active connections
 # =============================================================================
 controller:
-  # Allow configuration snippets for RUM injection
+  # Allow configuration snippets (required for potential Ingress-level customizations)
   allowSnippetAnnotations: true
-  
-  # Disable annotation validation that blocks sub_filter as "risky"
-  config:
-    allow-snippet-annotations: "true"
-    annotation-value-word-blocklist: ""
 
   # Prometheus metrics endpoint for monitoring NGINX itself
   metrics:
@@ -43,14 +38,21 @@ controller:
         prometheus.io/scrape: "true"
         prometheus.io/port: "10254"
 
-  # Structured JSON access logs — much easier to parse than plain text
-  # Each field maps to an NGINX variable:
-  #   $time_iso8601 → timestamp in ISO format
-  #   $status → HTTP response status code
-  #   $request_time → total time to serve the request (seconds)
-  #   $upstream_response_time → time the backend took to respond
-  #   $remote_addr → client IP address
+  # Single config: block — duplicate keys in YAML silently discard the first occurrence.
+  # Combining allow-snippet-annotations + JSON log format in one block.
   config:
+    # Allow snippet annotations (must also be here for the ConfigMap-based setting)
+    allow-snippet-annotations: "true"
+    # Empty blocklist disables the admission webhook's risky-annotation check
+    annotation-value-word-blocklist: ""
+
+    # Structured JSON access logs — much easier to parse than plain text
+    # Each field maps to an NGINX variable:
+    #   $time_iso8601 → timestamp in ISO format
+    #   $status → HTTP response status code
+    #   $request_time → total time to serve the request (seconds)
+    #   $upstream_response_time → time the backend took to respond
+    #   $remote_addr → client IP address
     log-format-upstream: >-
       {"time":"$time_iso8601","remote_addr":"$remote_addr",
       "request":"$request","status":$status,
@@ -61,8 +63,11 @@ controller:
       "http_user_agent":"$http_user_agent",
       "http_x_forwarded_for":"$http_x_forwarded_for"}
 
-    # Enable OpenTelemetry support in NGINX
-    enable-opentelemetry: "true"
+    # NOTE: enable-opentelemetry is intentionally omitted.
+    # Enabling NGINX OTel requires a running OTel collector endpoint configured
+    # via opentelemetry-config.yaml. Without it, NGINX workers emit constant
+    # "OTLP TRACE GRPC Exporter Export() failed" errors to stderr.
+    # NGINX request traces are captured through application-level OTel instead.
 
   # Azure-specific: Creates a Standard SKU Load Balancer
   service:

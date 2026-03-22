@@ -1,0 +1,29 @@
+# =============================================================================
+# INSTRUMENTATION PATCH: Ad Service (Java)
+# =============================================================================
+# Ad service serves contextual text ads to the frontend.
+# Called by: frontend
+# Language: Java — uses opentelemetry-javaagent auto-instrumentation.
+# The Java agent is loaded via JAVA_TOOL_OPTIONS in the container image.
+# Applied via: kubectl patch deployment adservice -n online-boutique --patch-file
+# =============================================================================
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "adservice"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.version=1.0.0,deployment.environment=assessment"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            # Java OTel agent uses OTEL_EXPORTER_OTLP_ENDPOINT directly.
+            # ENABLE_TRACING is checked by Go/Node services; Java reads OTEL_ vars directly.
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"

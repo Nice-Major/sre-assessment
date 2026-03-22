@@ -1,0 +1,31 @@
+# =============================================================================
+# INSTRUMENTATION PATCH: Checkout Service (Go)
+# =============================================================================
+# Checkout orchestrates the complete purchase flow:
+#   frontend → checkoutservice → paymentservice, shippingservice, emailservice
+#   cartservice, currencyservice, productcatalogservice
+#
+# This is the most CRITICAL service for end-to-end trace visibility.
+# Without this patch, the checkout span is missing and traces appear broken.
+# Applied via: kubectl patch deployment checkoutservice -n online-boutique --patch-file
+# =============================================================================
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "checkoutservice"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.version=1.0.0,deployment.environment=assessment"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"

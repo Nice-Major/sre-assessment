@@ -1,0 +1,28 @@
+# =============================================================================
+# INSTRUMENTATION PATCH: Email Service (Python)
+# =============================================================================
+# Email service sends order confirmation emails after checkout.
+# Called by: checkoutservice
+# Language: Python — uses opentelemetry-distro auto-instrumentation
+# Applied via: kubectl patch deployment emailservice -n online-boutique --patch-file
+# =============================================================================
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "emailservice"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.version=1.0.0,deployment.environment=assessment"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-gateway-opentelemetry-collector.otel-system.svc.cluster.local:4317"

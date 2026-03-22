@@ -74,12 +74,12 @@ config:
   # ---------------------------------------------------------------------------
   # RECEIVERS: How telemetry data enters this collector
   # Explicitly null out Helm chart defaults (jaeger, prometheus, zipkin)
+  # AND define the actual receivers in the same block (duplicate keys are invalid YAML)
   # ---------------------------------------------------------------------------
   receivers:
     jaeger: null
     prometheus: null
     zipkin: null
-  receivers:
     # Accept OTLP protocol over gRPC and HTTP from application pods
     otlp:
       protocols:
@@ -197,6 +197,19 @@ config:
         receivers: [otlp]
         processors: [memory_limiter, k8sattributes, resourcedetection, resource, batch]
         exporters: [otlp, debug]
+
+      # Metrics pipeline: app metrics + host metrics → enrich → send to Gateway
+      # hostmetrics provides CPU/memory/disk/network for Section 3.1 alerting rules
+      metrics:
+        receivers: [otlp, hostmetrics]
+        processors: [memory_limiter, resourcedetection, resource, batch]
+        exporters: [otlp]
+
+      # Logs pipeline: app logs → enrich → send to Gateway
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, resourcedetection, resource, batch]
+        exporters: [otlp]
 
       # Metrics pipeline: app metrics + host metrics → enrich → send to Gateway
       metrics:

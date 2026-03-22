@@ -226,6 +226,15 @@ jobs:
           echo "  Kibana:     http://kibana.$INGRESS_IP.nip.io"
           echo "  APM Server: http://apm.$INGRESS_IP.nip.io"
 
+          # Patch Kibana's publicBaseUrl now that we know the actual IP.
+          # kibana.yaml was applied before NGINX had an IP, so it still has
+          # the placeholder. Kibana uses publicBaseUrl for redirect URLs and
+          # Fleet enrollment links — wrong value breaks those flows.
+          echo "Patching Kibana publicBaseUrl with real IP..."
+          kubectl patch kibana kibana -n elastic --type merge \
+            -p "{\"spec\":{\"config\":{\"server.publicBaseUrl\":\"http://kibana.$INGRESS_IP.nip.io\"}}}"
+          echo "✅ Kibana publicBaseUrl updated to http://kibana.$INGRESS_IP.nip.io"
+
       # -----------------------------------------------------------------------
       # OPENTELEMETRY COLLECTORS
       # -----------------------------------------------------------------------
