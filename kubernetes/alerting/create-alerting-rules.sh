@@ -360,23 +360,3 @@ echo "   11. SSL Certificate Expires <14 days"
 echo ""
 echo "View rules: Kibana → Stack Management → Rules"
 echo "============================================"
-    "criteria": [{
-      "metric": "nginx.stubstatus.hostname",
-      "comparator": "<",
-      "threshold": [14],
-      "timeSize": 1,
-      "timeUnit": "d",
-      "aggType": "min"
-    }],
-    "sourceId": "default"
-  },
-  "actions": [],
-  "tags": ["sre-assessment", "nginx", "ssl"]
-}'
-
-echo ""
-echo "============================================"
-echo "  ✅ All 11 alerting rules created"
-echo "============================================"
-echo ""
-echo "View in Kibana: Stack Management → Rules and Connectors"
