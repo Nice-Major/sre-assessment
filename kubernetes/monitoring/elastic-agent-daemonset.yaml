@@ -1,46 +1,29 @@
 # =============================================================================
-# ELASTIC AGENT — Standalone DaemonSet for Infrastructure Monitoring
+# METRICBEAT — Standalone DaemonSet for Infrastructure Monitoring
 # =============================================================================
 # PURPOSE:
-#   This deploys an Elastic Agent on EVERY node in the AKS cluster.
-#   It collects infrastructure metrics for all 4 monitoring categories:
+#   Deploys Metricbeat on every AKS node to collect infrastructure metrics.
+#   Uses docker.elastic.co/beats/metricbeat:8.13.4 which runs standalone
+#   (no Fleet Server enrollment required — reads config from ConfigMap).
 #
-#   Section 3.1 — Compute:
-#     - CPU utilization per core (system.cpu)
-#     - Memory used/available (system.memory)
-#     - Disk I/O and filesystem usage (system.diskio, system.filesystem)
-#     - Network bytes/errors per interface (system.network)
-#     - Load averages (system.load)
+#   Replaces the previous Elastic Agent DaemonSet, which crashed because the
+#   elastic-agent image requires Fleet enrollment and its entrypoint script
+#   cannot find the binary when run in standalone mode.
 #
-#   Section 3.2 — Databases:
-#     - PostgreSQL: connection pool, cache hits, transactions (postgresql.*)
-#     - Redis: memory usage, eviction rate, connected clients (redis.info)
-#
-#   Section 3.4 — Load Balancer:
-#     - NGINX stub_status: active connections, accepted, handled, requests
-#
-# WHY THIS FILE EXISTS:
-#   elastic-agent-config.yaml creates a ConfigMap (the config content) but
-#   does NOT run any agent. This DaemonSet mounts that ConfigMap and runs
-#   the actual Elastic Agent binary in "standalone" mode (no Fleet Server
-#   enrollment needed — it reads config directly from the mounted file).
+#   Metrics collected:
+#     Section 3.1 — Compute:  system.* (cpu, memory, disk, network, load)
+#     Section 3.2 — Database: postgresql.*, redis.*
+#     Section 3.4 — Load Balancer: nginx metrics via Prometheus scrape
+#       (metrics-prometheus.* indices; ingress-nginx exposes at :10254/metrics)
 #
 # DATA FLOW:
-#   K8s Node → Elastic Agent (this DaemonSet) → Elasticsearch
-#   PostgreSQL → Elastic Agent (one pod polls all DB instances) → Elasticsearch
-#   Redis → Elastic Agent → Elasticsearch
-#   NGINX metrics endpoint → Elastic Agent → Elasticsearch
-#
-# STANDALONE vs FLEET MODE:
-#   Fleet mode: Agent enrolls in Fleet Server, gets config pushed to it.
-#   Standalone mode: Agent reads config from a local file (our ConfigMap).
-#   Standalone is simpler and doesn't require Fleet Server to be running.
+#   K8s Node → Metricbeat (this DaemonSet) → Elasticsearch (system.*)
+#   PostgreSQL → Metricbeat → Elasticsearch (metrics-postgresql.*)
+#   Redis      → Metricbeat → Elasticsearch (metrics-redis.*)
+#   NGINX :10254/metrics → Metricbeat prometheus module → Elasticsearch
 # =============================================================================
 
-# ---- RBAC: ServiceAccount + ClusterRole for Elastic Agent ----
-# Elastic Agent needs K8s API access to:
-# - Read pod/namespace/node metadata for enrichment
-# - Collect Kubernetes-level metrics (optional, not configured here)
+# ---- RBAC: ServiceAccount + ClusterRole for Metricbeat ----
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -80,143 +63,104 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# ---- ConfigMap: Elastic Agent configuration (standalone mode) ----
-# This ConfigMap defines ALL inputs in a single elastic-agent.yml file.
-# Each section corresponds to a monitoring integration.
+# ---- ConfigMap: Metricbeat configuration ----
+# Standard Metricbeat YAML format with one module block per integration.
+# The prometheus module scrapes ingress-nginx Prometheus endpoint instead of
+# nginx stub_status (which requires additional ingress-nginx configuration
+# to expose the status server outside the pod's loopback interface).
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: elastic-agent-config
   namespace: monitoring
 data:
-  elastic-agent.yml: |
-    agent:
-      monitoring:
-        enabled: true
-        logs: true
-        metrics: true
+  metricbeat.yml: |
+    metricbeat.modules:
 
-    inputs:
       # ---- SYSTEM METRICS (Section 3.1 — Compute Monitoring) ----
-      - id: system-metrics
-        type: system/metrics
-        data_stream:
-          namespace: assessment
-        use_output: default
-        streams:
-          - data_stream:
-              dataset: system.cpu
-              type: metrics
-            metricsets: ["cpu"]
-            period: 10s
-            cpu.metrics: ["percentages", "normalized_percentages"]
-          - data_stream:
-              dataset: system.memory
-              type: metrics
-            metricsets: ["memory"]
-            period: 10s
-          - data_stream:
-              dataset: system.diskio
-              type: metrics
-            metricsets: ["diskio"]
-            period: 30s
-          - data_stream:
-              dataset: system.filesystem
-              type: metrics
-            metricsets: ["filesystem"]
-            period: 60s
-            processors:
-              - drop_event.when.regexp:
-                  system.filesystem.mount_point: '^/(sys|cgroup|proc|dev|etc|host|lib|snap)($|/)'
-          - data_stream:
-              dataset: system.network
-              type: metrics
-            metricsets: ["network"]
-            period: 10s
-          - data_stream:
-              dataset: system.load
-              type: metrics
-            metricsets: ["load"]
-            period: 10s
+      - module: system
+        metricsets:
+          - cpu
+          - load
+          - memory
+          - network
+          - process
+          - diskio
+          - filesystem
+        period: 10s
+        processes: ['.*']
+        cpu.metrics: ["percentages", "normalized_percentages"]
+        filesystem.ignore_types:
+          - tmpfs
+          - devtmpfs
+          - devfs
+          - iso9660
+          - overlay
+          - aufs
+          - squashfs
+        processors:
+          - add_kubernetes_metadata:
+              host: ${NODE_NAME}
+              matchers:
+                - logs_path:
+                    logs_path: "/var/log/containers/"
 
       # ---- POSTGRESQL METRICS (Section 3.2 — Database Monitoring) ----
-      # Only runs on one node (all agents will try; non-reachable ones skip gracefully)
-      - id: postgresql-metrics
-        type: postgresql/metrics
-        data_stream:
-          namespace: assessment
-        use_output: default
-        streams:
-          - data_stream:
-              dataset: postgresql.activity
-              type: metrics
-            metricsets: ["activity"]
-            period: 10s
-            hosts:
-              - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
-          - data_stream:
-              dataset: postgresql.database
-              type: metrics
-            metricsets: ["database"]
-            period: 30s
-            hosts:
-              - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
-          - data_stream:
-              dataset: postgresql.bgwriter
-              type: metrics
-            metricsets: ["bgwriter"]
-            period: 60s
-            hosts:
-              - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
+      - module: postgresql
+        enabled: true
+        metricsets:
+          - activity
+          - database
+          - bgwriter
+        period: 30s
+        hosts:
+          - "postgres://boutique:assessment-pg-pass@postgresql.online-boutique.svc.cluster.local:5432/boutique_db?sslmode=disable"
 
       # ---- REDIS METRICS (Section 3.2 — Database Monitoring) ----
-      - id: redis-metrics
-        type: redis/metrics
-        data_stream:
-          namespace: assessment
-        use_output: default
-        streams:
-          - data_stream:
-              dataset: redis.info
-              type: metrics
-            metricsets: ["info"]
-            period: 10s
-            hosts:
-              - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
-          - data_stream:
-              dataset: redis.keyspace
-              type: metrics
-            metricsets: ["keyspace"]
-            period: 60s
-            hosts:
-              - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
-
-      # ---- NGINX METRICS (Section 3.4 — Load Balancer Monitoring) ----
-      - id: nginx-metrics
-        type: nginx/metrics
-        data_stream:
-          namespace: assessment
-        use_output: default
-        streams:
-          - data_stream:
-              dataset: nginx.stubstatus
-              type: metrics
-            metricsets: ["stubstatus"]
-            period: 10s
-            hosts:
-              - "http://ingress-nginx-controller-metrics.ingress-nginx.svc.cluster.local:10254/nginx_status"
-
-    outputs:
-      default:
-        type: elasticsearch
+      - module: redis
+        metricsets:
+          - info
+          - keyspace
+        period: 30s
         hosts:
-          - "https://elasticsearch-es-http.elastic.svc.cluster.local:9200"
-        username: "elastic"
-        password: "${ELASTIC_PASSWORD}"
-        ssl.verification_mode: none
+          - "redis://redis-cart.online-boutique.svc.cluster.local:6379"
+
+      # ---- NGINX METRICS via Prometheus scrape (Section 3.4 — Load Balancer) ----
+      # ingress-nginx exposes full Prometheus metrics at :10254/metrics, including:
+      #   nginx_ingress_controller_requests (by status code, method, path)
+      #   nginx_ingress_controller_response_duration_seconds (latency histogram)
+      #   nginx_ingress_controller_bytes_sent_total (bandwidth)
+      # This is richer than stub_status and avoids needing a separate status server.
+      - module: prometheus
+        metricsets: [collector]
+        period: 30s
+        hosts:
+          - "http://ingress-nginx-controller-metrics.ingress-nginx.svc.cluster.local:10254"
+        metrics_path: /metrics
+
+    processors:
+      - add_cloud_metadata: {}
+      - add_host_metadata: {}
+
+    output.elasticsearch:
+      hosts:
+        - "https://elasticsearch-es-http.elastic.svc.cluster.local:9200"
+      username: "elastic"
+      password: "${ELASTIC_PASSWORD}"
+      ssl.verification_mode: none
+
+    # Kibana setup — allows loading sample dashboards; optional for monitoring
+    # setup.kibana:
+    #   host: "http://kibana-kb-http.elastic.svc.cluster.local:5601"
+
+    # Ship monitoring telemetry about Metricbeat itself to Elasticsearch
+    monitoring.enabled: false
+
+    logging.level: info
+    logging.to_files: false
 
 ---
-# ---- DaemonSet: Run one Elastic Agent per node ----
+# ---- DaemonSet: Run one Metricbeat per node ----
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -235,23 +179,25 @@ spec:
     spec:
       serviceAccountName: elastic-agent
       tolerations:
-        # Run on all nodes including control plane (for completeness)
+        # Run on all nodes including control plane
         - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule
+      hostNetwork: false
+      dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: elastic-agent
-          image: docker.elastic.co/beats/elastic-agent:8.13.4
+          image: docker.elastic.co/beats/metricbeat:8.13.4
           args:
             - "-c"
-            - "/etc/elastic-agent/elastic-agent.yml"
+            - "/etc/metricbeat/metricbeat.yml"
             - "-e"
+            - "--strict.perms=false"
           env:
             - name: ELASTIC_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: elasticsearch-es-elastic-user
                   key: elastic
-            # Tell the agent its node name for metadata enrichment
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -262,6 +208,9 @@ spec:
                   fieldPath: metadata.name
           securityContext:
             runAsUser: 0
+            capabilities:
+              add:
+                - SYS_PTRACE
           resources:
             requests:
               cpu: 100m
@@ -271,25 +220,28 @@ spec:
               memory: 512Mi
           volumeMounts:
             - name: config
-              mountPath: /etc/elastic-agent/elastic-agent.yml
-              subPath: elastic-agent.yml
+              mountPath: /etc/metricbeat/metricbeat.yml
+              subPath: metricbeat.yml
               readOnly: true
             - name: data
-              mountPath: /usr/share/elastic-agent/data
-            # Mount proc for host-level system metrics collection
+              mountPath: /usr/share/metricbeat/data
             - name: proc
               mountPath: /hostfs/proc
               readOnly: true
             - name: sys
               mountPath: /hostfs/sys
               readOnly: true
+            - name: cgroup
+              mountPath: /hostfs/sys/fs/cgroup
+              readOnly: true
       volumes:
         - name: config
           configMap:
             name: elastic-agent-config
+            defaultMode: 0600
         - name: data
           hostPath:
-            path: /var/lib/elastic-agent-data
+            path: /var/lib/metricbeat-data
             type: DirectoryOrCreate
         - name: proc
           hostPath:
@@ -297,3 +249,6 @@ spec:
         - name: sys
           hostPath:
             path: /sys
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup

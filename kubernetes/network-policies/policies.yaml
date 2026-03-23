@@ -324,3 +324,50 @@ spec:
       ports:
         - port: 53
           protocol: UDP
+
+---
+# Policy 10: Allow Metricbeat (monitoring namespace) → PostgreSQL
+# Metricbeat runs in the monitoring namespace and needs to scrape PostgreSQL
+# metrics (connections, cache stats, bgwriter) for Section 3.2 validation.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-to-postgresql
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: postgresql
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 5432
+          protocol: TCP
+
+---
+# Policy 11: Allow Metricbeat (monitoring namespace) → Redis
+# Metricbeat needs to scrape Redis info and keyspace metrics for Section 3.2.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-to-redis
+  namespace: online-boutique
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-cart
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 6379
+          protocol: TCP
